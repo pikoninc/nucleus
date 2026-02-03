@@ -819,6 +819,19 @@ def main(argv=None) -> int:
     p_list_tools.add_argument("--json", action="store_true", help="Output JSON (default)")
     p_list_tools.set_defaults(func=cmd_list_tools)
 
+    p_init = sub.add_parser("init", help="Initialize a new app scaffold (spec-driven)")
+    p_init.add_argument("--app-id", help="App ID / directory name (e.g. my_app or my-app)")
+    p_init.add_argument("--name", help="Human readable app name")
+    p_init.add_argument("--target-dir", default=".", help="Base directory to create the app directory in")
+    p_init.add_argument("--force", action="store_true", help="Overwrite existing target directory if present")
+    p_init.add_argument(
+        "--prune-framework-artifacts",
+        action="store_true",
+        help="(Danger) Delete ./ai and ./specs in the current directory after confirmation",
+    )
+    p_init.add_argument("--no-input", action="store_true", help="Disable prompts (requires --app-id)")
+    p_init.set_defaults(func=cmd_init)
+
     p_list_intents = sub.add_parser("list-intents", help="List intents provided by loaded plugins")
     p_list_intents.add_argument("--plugins-dir", default=str(_default_plugins_dir()), help="Plugins directory")
     p_list_intents.add_argument("--json", action="store_true", help="Output JSON")

@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Optional
 
+import jsonschema
+
 from .errors import ToolExecutionError, ToolNotFound, ValidationError
 from .runtime_context import RuntimeContext
 from ..registry.tool_registry import ToolRegistry
@@ -64,6 +66,25 @@ class Executor:
                     data={"tool_id": tool_id},
                 )
                 raise ToolNotFound(code="tool.unknown", message=f"Unknown tool: {tool_id}", data={"tool_id": tool_id})
+
+            # Validate tool args against tool args_schema for better, stable errors.
+            try:
+                args_schema = tool_def.get("args_schema", {})
+                jsonschema.Draft202012Validator(args_schema).validate(args)
+            except Exception as e:  # noqa: BLE001
+                self._trace.emit(
+                    "step_denied",
+                    intent_id=intent_id,
+                    plan_id=plan_id,
+                    step_id=step_id,
+                    message="Tool args validation failed",
+                    data={"tool_id": tool_id, "error": repr(e)},
+                )
+                raise ValidationError(
+                    code="tool.args_invalid",
+                    message="Tool args validation failed",
+                    data={"tool_id": tool_id},
+                ) from e
 
             self._trace.emit(
                 "step_started",

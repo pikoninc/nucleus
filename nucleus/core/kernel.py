@@ -7,9 +7,9 @@ from nucleus.trace.trace_emitter import TraceEmitter
 from nucleus.trace.trace_store_jsonl import TraceStoreJSONL
 
 from .executor import Executor
-from .permission_guard import PermissionGuard
 from .planner import Planner
-from .policy_engine import PolicyEngine, PolicyResult
+from .errors import PolicyDenied
+from .policy_engine import PolicyEngine
 from .runtime_context import RuntimeContext
 
 
@@ -41,14 +41,26 @@ class Kernel:
         trace.emit("intent_received", intent_id=intent_id, plan_id=plan_id, message="Intent received", data={"intent": intent})
 
         policy_engine = PolicyEngine(self._tools)
-        guard = PermissionGuard(policy_engine)
-        result = guard.check(ctx, plan)
+        result = policy_engine.evaluate(ctx, plan)
         trace.emit(
             "policy_decision",
             intent_id=intent_id,
             plan_id=plan_id,
             policy={"decision": result.decision, "reason_codes": result.reason_codes, "summary": result.summary},
         )
+        if result.decision != "allow":
+            trace.emit(
+                "step_denied",
+                intent_id=intent_id,
+                plan_id=plan_id,
+                message=result.summary or "Denied by policy",
+                policy={"decision": result.decision, "reason_codes": result.reason_codes, "summary": result.summary},
+            )
+            raise PolicyDenied(
+                code="policy.denied",
+                message=result.summary or "Denied by policy",
+                data={"reasons": result.reason_codes},
+            )
 
         executor = Executor(self._tools, trace)
         return executor.execute(ctx, plan)

@@ -24,12 +24,6 @@ def run(args: Dict[str, Any], dry_run: bool) -> Dict[str, Any]:
     src = expand_user_path(src_raw)
     dst = expand_user_path(dst_raw)
 
-    if not src.exists():
-        raise FileNotFoundError(f"fs.move: source not found: {src}")
-
-    if dst.exists() and not overwrite:
-        raise FileExistsError(f"fs.move: destination exists (overwrite=false): {dst}")
-
     if dry_run:
         return {
             "from": str(src),
@@ -39,6 +33,12 @@ def run(args: Dict[str, Any], dry_run: bool) -> Dict[str, Any]:
                 {"kind": "fs_move", "summary": f"Move {src} -> {dst}", "resources": [str(src), str(dst)]}
             ],
         }
+
+    if not src.exists():
+        raise FileNotFoundError(f"fs.move: source not found: {src}")
+
+    if dst.exists() and not overwrite:
+        raise FileExistsError(f"fs.move: destination exists (overwrite=false): {dst}")
 
     dst.parent.mkdir(parents=True, exist_ok=True)
     src.rename(dst)

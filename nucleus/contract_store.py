@@ -6,6 +6,8 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 import jsonschema
+from referencing import Registry, Resource
+from referencing.jsonschema import DRAFT202012
 
 
 @dataclass(frozen=True)
@@ -29,6 +31,7 @@ class ContractStore:
         self._schemas_dir = schemas_dir
         self._schemas: Dict[str, SchemaRef] = {}
         self._store: Dict[str, Dict[str, Any]] = {}
+        self._registry: Registry = Registry()
 
     @property
     def schemas_dir(self) -> Path:
@@ -37,6 +40,8 @@ class ContractStore:
     def load(self) -> None:
         if not self._schemas_dir.exists():
             raise FileNotFoundError(str(self._schemas_dir))
+
+        registry: Registry = Registry()
 
         for p in sorted(self._schemas_dir.glob("*.json")):
             schema = json.loads(p.read_text(encoding="utf-8"))
@@ -50,9 +55,17 @@ class ContractStore:
             if isinstance(schema_id, str) and schema_id:
                 self._store[schema_id] = schema
 
+            # Build a modern referencing.Registry so Draft202012Validator doesn't need RefResolver.
+            resource = Resource.from_contents(schema, default_specification=DRAFT202012)
+            registry = registry.with_resource(file_uri, resource)
+            if isinstance(schema_id, str) and schema_id:
+                registry = registry.with_resource(schema_id, resource)
+
         # Sanity: ensure defs exists when referenced
         if "defs.schema.json" not in self._schemas:
             raise FileNotFoundError("defs.schema.json is required in contracts/core/schemas/")
+
+        self._registry = registry
 
     def list_schema_names(self) -> List[str]:
         return sorted(self._schemas.keys())
@@ -81,8 +94,7 @@ class ContractStore:
         Validates an instance and returns a list of error strings (empty means valid).
         """
         ref = self._get(schema_name)
-        resolver = jsonschema.RefResolver(base_uri=ref.file_uri, referrer=ref.schema, store=self._store)
-        validator = jsonschema.Draft202012Validator(ref.schema, resolver=resolver)
+        validator = jsonschema.Draft202012Validator(ref.schema, registry=self._registry)
         return [e.message for e in sorted(validator.iter_errors(instance), key=str)]
 
     def validate_json_file(self, schema_name: str, path: Path) -> List[str]:

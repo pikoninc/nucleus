@@ -410,6 +410,17 @@ def cmd_check_contracts(_args: argparse.Namespace) -> int:
     if not ok:
         return 1
 
+    # Validate shipped plugin contract examples (e.g. builtin desktop.tidy sample).
+    from nucleus.contract_checks import validate_plugin_contract_examples  # local import to keep CLI startup light
+    from nucleus.resources import contracts_dir
+
+    plugin_failures = validate_plugin_contract_examples(contracts_dir() / "plugins")
+    if plugin_failures:
+        print("Plugin contract examples failed validation:")
+        for f in plugin_failures:
+            print("- {}: {}".format(f.plugin_id, f.error))
+        return 1
+
     print("Contracts OK")
     return 0
 

@@ -4,7 +4,7 @@
   "date": "2026-02-03",
   "plan_id": "PLAN-0001",
   "task_ids": ["TASK-0001", "TASK-0002"],
-  "summary": "ai/ 運用ディレクトリ初期化（テンプレート追加、.sessions を gitignore）。",
+  "summary": "Initialize ai/ ops workspace (add templates, gitignore .sessions).",
   "changes": {
     "paths_added": [
       "ai/README.md",

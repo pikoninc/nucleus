@@ -133,7 +133,6 @@ class BuiltinDesktopPlanner(Planner):
             "    match:\n"
             "      any:\n"
             "        - filename_regex: \"^Screen Shot \"\n"
-            "        - filename_regex: \"^スクリーンショット\"\n"
             "        - mime_prefix: \"image/\"\n"
             "    action:\n"
             "      move_to: \"screenshots\"\n\n"

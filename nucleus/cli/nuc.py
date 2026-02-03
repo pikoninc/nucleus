@@ -18,6 +18,7 @@ from nucleus.resources import core_contracts_examples_dir, core_contracts_schema
 from nucleus.registry.plugin_registry import PluginRegistry
 from plugins.builtin_desktop.planner import get_planner as get_builtin_desktop_planner
 from nucleus.trace.replay import Replay
+from nucleus.cli.memory_stub import build_stub as build_memory_stub
 
 
 def _load_json(path: Path):
@@ -107,9 +108,9 @@ def _scaffold_app_dir(*, project_dir: Path, app_id: str, app_name: str) -> None:
                 "pip install -e .",
                 "```",
                 "",
-                "## Specs",
+                "## Specs (spec-driven)",
                 "",
-                "- See `specs/` for spec-driven development starting points.",
+                "- Start by editing `specs/` and drive implementation from specs.",
                 "",
             ]
         )
@@ -207,10 +208,41 @@ def _scaffold_app_dir(*, project_dir: Path, app_id: str, app_name: str) -> None:
                 "",
                 "This folder is for app-local AI collaboration artifacts (plans, notes, run logs).",
                 "",
-                "Keep specs authoritative under `specs/`.",
+                "Keep specs authoritative under `specs/`. Treat chat logs as auxiliary context only.",
                 "",
             ]
         ),
+    )
+
+    _write_text(
+        project_dir / "ai" / "memory.md",
+        "\n".join(
+            [
+                "# AI Memory (Summary & Decisions)",
+                "",
+                "This file is a curated, cross-chat memory for the app.",
+                "Do not paste raw chat logs here. Keep only decisions and next actions.",
+                "",
+                "## Update rule (3 lines)",
+                "- Decision: what was decided",
+                "- Why: why it was decided",
+                "- Next: what to do next",
+                "",
+                "## Key decisions (changelog)",
+                f"- **{app_id}**: Initialization (`nuc init`)",
+                "  - Decision: scaffold the project",
+                "  - Why: to start spec-driven development immediately",
+                "  - Next: fill in `specs/00_overview.md`",
+                "",
+                "## Current focus",
+                "- TODO",
+                "",
+                "## Next Actions",
+                "- TODO",
+                "",
+            ]
+        )
+        + "\n",
     )
 
 
@@ -227,13 +259,13 @@ def _maybe_prune_framework_artifacts(*, cwd: Path, interactive: bool) -> None:
             data={"paths": [str(p) for p in existing]},
         )
 
-    print("以下のディレクトリを削除します（フレームワーク開発用成果物の剪定）:")
+    print("The following directories will be deleted (pruning framework artifacts):")
     for p in existing:
         print(f"- {p}")
     print("")
-    token = input("本当に削除する場合は 'DELETE' と入力してください: ").strip()
+    token = input("Type 'DELETE' to confirm: ").strip()
     if token != "DELETE":
-        print("削除をスキップしました。")
+        print("Skipped deletion.")
         return
 
     for p in existing:
@@ -241,7 +273,7 @@ def _maybe_prune_framework_artifacts(*, cwd: Path, interactive: bool) -> None:
             shutil.rmtree(p)
         else:
             p.unlink()
-    print("削除しました。")
+    print("Deleted.")
 
 
 def cmd_init(args: argparse.Namespace) -> int:
@@ -256,13 +288,13 @@ def cmd_init(args: argparse.Namespace) -> int:
 
     if interactive:
         if not app_id:
-            app_id = _prompt("アプリID（ディレクトリ名）", default="my_app")
+            app_id = _prompt("App ID (directory name)", default="my_app")
         app_id = _validate_app_id(str(app_id))
         if not app_name:
-            app_name = _prompt("アプリ名（表示名）", default=app_id)
+            app_name = _prompt("App name (display name)", default=app_id)
         prune = bool(getattr(args, "prune_framework_artifacts", False))
         if not prune:
-            prune = _confirm_bool("このディレクトリのフレームワーク用 `ai/` と `specs/` を削除しますか？", default=False)
+            prune = _confirm_bool("Delete framework artifacts (`ai/` and `specs/`) in the current directory?", default=False)
         if prune:
             _maybe_prune_framework_artifacts(cwd=cwd, interactive=True)
     else:
@@ -285,7 +317,37 @@ def cmd_init(args: argparse.Namespace) -> int:
         shutil.rmtree(project_dir)
 
     _scaffold_app_dir(project_dir=project_dir, app_id=str(app_id), app_name=str(app_name))
-    print(f"OK: {project_dir} を作成しました。")
+    print(f"OK: created {project_dir}.")
+    return 0
+
+
+def cmd_memory_stub(args: argparse.Namespace) -> int:
+    t = Path(args.transcript).expanduser()
+    if not t.exists():
+        raise ValidationError(code="memory_stub.not_found", message=f"Transcript not found: {t}")
+
+    repo_root = Path.cwd()
+    stub = build_memory_stub(transcript_path=t, repo_root=repo_root, date=args.date)
+
+    if args.append:
+        mem = Path(args.memory).expanduser()
+        if not mem.exists():
+            raise ValidationError(code="memory_stub.memory_missing", message=f"Memory file not found: {mem}")
+        txt = mem.read_text(encoding="utf-8", errors="replace")
+        marker = "## Key decisions (changelog)"
+        idx = txt.find(marker)
+        if idx < 0:
+            raise ValidationError(code="memory_stub.marker_missing", message=f"Marker not found in memory file: {marker}")
+        after = txt.find("\n\n", idx)
+        if after < 0:
+            after = idx + len(marker)
+        insert_at = after + 2
+        new_txt = txt[:insert_at] + stub + txt[insert_at:]
+        mem.write_text(new_txt, encoding="utf-8")
+        print(f"Appended stub to: {mem}")
+        return 0
+
+    print(stub, end="")
     return 0
 
 
@@ -526,7 +588,6 @@ def cmd_desktop_configure(args: argparse.Namespace) -> int:
         "    match:\n"
         "      any:\n"
         "        - filename_regex: \"^Screen Shot \"\n"
-        "        - filename_regex: \"^スクリーンショット\"\n"
         "        - mime_prefix: \"image/\"\n"
         "    action:\n"
         "      move_to: \"screenshots\"\n\n"
@@ -831,6 +892,13 @@ def main(argv=None) -> int:
     )
     p_init.add_argument("--no-input", action="store_true", help="Disable prompts (requires --app-id)")
     p_init.set_defaults(func=cmd_init)
+
+    p_mem = sub.add_parser("memory-stub", help="Generate a stub entry for ai/memory.md from a transcript (no AI summarization)")
+    p_mem.add_argument("--transcript", required=True, help="Path to transcript txt (usually under ai/.sessions/...)")
+    p_mem.add_argument("--date", help="YYYY-MM-DD (default: today)")
+    p_mem.add_argument("--append", action="store_true", help="Append to memory file instead of printing to stdout")
+    p_mem.add_argument("--memory", default="ai/memory.md", help="Path to memory file (default: ai/memory.md)")
+    p_mem.set_defaults(func=cmd_memory_stub)
 
     p_list_intents = sub.add_parser("list-intents", help="List intents provided by loaded plugins")
     p_list_intents.add_argument("--plugins-dir", default=str(_default_plugins_dir()), help="Plugins directory")

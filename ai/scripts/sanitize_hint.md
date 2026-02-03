@@ -1,20 +1,20 @@
-## sanitize_hint.md（ログに入れない指針）
+## sanitize_hint.md (what NOT to include in versioned logs)
 
-`ai/runs/` はGit管理される前提のため、**機密や生ログ**を入れない。
-会話ログ・詳細な出力・未公開情報は `ai/.sessions/` に隔離し、必要なら要約のみを `ai/runs/` に残す。
+Because `ai/runs/` is intended to be versioned in Git, do **not** put secrets or raw logs there.
+Keep chat logs, long outputs, and non-public details under `ai/.sessions/`, and only store curated summaries in `ai/runs/` when needed.
 
-### 入れてはいけないもの（例）
+### Do NOT include (examples)
 
-- APIキー/トークン/資格情報、`.env` 相当
-- 個人情報（氏名、メール、住所、アカウントID等）
-- 顧客名・社内限定URL・未公開の障害情報
-- そのまま貼ったターミナル出力（長大ログ、環境情報、パス、ホスト名など）
-- パッチ断片や未レビューのコード全文（必要ならPR/コミット参照にする）
+- API keys / tokens / credentials, `.env`-equivalent data
+- Personal data (names, emails, addresses, account IDs, etc.)
+- Customer names, internal-only URLs, non-public incident information
+- Raw terminal output pasted as-is (long logs, environment details, paths, hostnames, etc.)
+- Patch fragments or full unreviewed code dumps (prefer PR/commit references)
 
-### 残してよい粒度（推奨）
+### What is OK to keep (recommended granularity)
 
-- どの `PLAN-*` / `TASK-*` を進めたか
-- 触ったファイルのパス（機密でない範囲）
-- 実行した検証（例: `python scripts/check_contracts.py`、ユニットテスト）と結果（成功/失敗）
-- 失敗した場合の **短い要約**（エラー全文ではなく原因カテゴリと次アクション）
+- Which `PLAN-*` / `TASK-*` you worked on
+- File paths you touched (as long as non-sensitive)
+- Verification you ran (e.g., `python scripts/check_contracts.py`, unit tests) and the outcome (pass/fail)
+- If something failed: a **short summary** (not full error logs; include category + next action)
 

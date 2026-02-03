@@ -74,7 +74,7 @@ def _has_pr_override(pr_body: str | None) -> tuple[bool, str]:
     if not PR_OVERRIDE_TAG.search(pr_body):
         return False, ""
     if not PR_OVERRIDE_REASON.search(pr_body):
-        return False, "PR本文の `Test-Impact: none` には `Test-Impact-Reason:` が必要です。"
+        return False, "`Test-Impact: none` in the PR body requires `Test-Impact-Reason:`."
     return True, ""
 
 
@@ -87,7 +87,7 @@ def _has_work_task_override(work_tasks_files: dict[str, str]) -> tuple[bool, str
         if not WORK_TASK_OVERRIDE_TAG.search(content):
             continue
         if not WORK_TASK_OVERRIDE_REASON.search(content):
-            return False, "`TestImpact: none` には `TestImpactReason:` が必要です（work task）。"
+            return False, "`TestImpact: none` requires `TestImpactReason:` (work task)."
         return True, ""
     return False, ""
 

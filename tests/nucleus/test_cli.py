@@ -154,6 +154,44 @@ class TestNucCli(unittest.TestCase):
             self.assertTrue((root / "pic.jpg").exists())
             self.assertFalse((staging / "Images" / "pic.jpg").exists())
 
+    def test_init_scaffolds_app_dir_non_interactive(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            td_path = Path(td)
+            buf = io.StringIO()
+            with redirect_stdout(buf):
+                rc = nuc_main(
+                    [
+                        "init",
+                        "--app-id",
+                        "my_app",
+                        "--name",
+                        "My App",
+                        "--target-dir",
+                        str(td_path),
+                        "--no-input",
+                    ]
+                )
+            self.assertEqual(rc, 0)
+            app_dir = td_path / "my_app"
+            self.assertTrue((app_dir / "pyproject.toml").exists())
+            self.assertTrue((app_dir / "specs" / "INDEX.md").exists())
+            self.assertTrue((app_dir / "ai" / "README.md").exists())
+            self.assertTrue((app_dir / "ai" / "memory.md").exists())
+
+    def test_memory_stub_prints_entry(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            td_path = Path(td)
+            tr = td_path / "t.txt"
+            tr.write_text("see /workspaces/nucleus/README.md\n$ python -m unittest -q\n", encoding="utf-8")
+
+            buf = io.StringIO()
+            with redirect_stdout(buf):
+                rc = nuc_main(["memory-stub", "--transcript", str(tr)])
+            self.assertEqual(rc, 0)
+            out = buf.getvalue()
+            self.assertIn("Transcript", out)
+            self.assertIn("README.md", out)
+
 
 if __name__ == "__main__":
     unittest.main()

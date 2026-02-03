@@ -19,7 +19,6 @@ rules:
     match:
       any:
         - filename_regex: "^Screen Shot "
-        - filename_regex: "^スクリーンショット"
         - mime_prefix: "image/"
       all:
         - created_within_days: 90

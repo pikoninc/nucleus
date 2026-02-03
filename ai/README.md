@@ -41,3 +41,19 @@ To sync them into `ai/.sessions/` (still ignored by git), run:
 python ai/scripts/sync_cursor_transcripts.py
 ```
 
+### Carrying decisions into new chats (recommended)
+New chats do not automatically read raw session logs.
+Instead, keep a short, curated summary in `ai/memory.md` and attach it at the start of a chat (Cursor: `@ai/memory.md`).
+
+To generate a **stub entry** from a transcript (materials only; no AI summarization), run:
+
+```bash
+python ai/scripts/transcript_to_memory_stub.py --transcript ai/.sessions/agent-transcripts/<file>.txt
+```
+
+To append the stub into `ai/memory.md` automatically:
+
+```bash
+python ai/scripts/transcript_to_memory_stub.py --transcript ai/.sessions/agent-transcripts/<file>.txt --append
+```
+

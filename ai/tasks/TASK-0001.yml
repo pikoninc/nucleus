@@ -1,17 +1,17 @@
 version: 1
 id: TASK-0001
 plan_id: PLAN-0001
-title: Desktop Rules schema/example の整合チェックと更新手順の明文化
 status: todo # todo|doing|blocked|done
 priority: P1
 
+title: Desktop Rules schema/example alignment check + document update procedure
 description: >
-  builtin.desktop の desktop_rules schema と example を照合し、
-  変更時に守るべき互換性ルールと更新手順を `ai/` の運用として残す。
+  Compare the builtin.desktop desktop_rules schema and example, and document
+  compatibility rules and update procedures under `ai/` for future changes.
 
 acceptance_criteria:
-  - schema と example の不整合がない（検証が通る）
-  - 互換性破壊がある場合は明示され、移行指針が残る
+  - No mismatch between schema and example (validation passes)
+  - Any breaking change is explicitly noted with migration guidance
 
 scope:
   contracts:
@@ -21,5 +21,5 @@ scope:
     - ai/plans/PLAN-0001-desktop-dsl.yml
 
 notes:
-  - 実装変更を伴う場合は別タスクに分割する
+  - If implementation changes are required, split into a separate task
 

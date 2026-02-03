@@ -1,17 +1,17 @@
 version: 1
 id: TASK-0002
 plan_id: PLAN-0001
-title: builtin_desktop planner の DSL 処理の安全性確認（バリデーション/デフォルト）
+title: builtin_desktop planner DSL safety review (validation/defaults)
 status: todo # todo|doing|blocked|done
 priority: P1
 
 description: >
-  `plugins/builtin_desktop/planner.py` における DSL 取り込み・デフォルト値・
-  エラーメッセージを確認し、必要ならバリデーションを強化する。
+  Review DSL ingestion, default values, and error messages in
+  `plugins/builtin_desktop/planner.py`, and strengthen validation if needed.
 
 acceptance_criteria:
-  - 不正入力に対して明確なエラーが出る
-  - 既存テストが通り、必要ならテストが追加される
+  - Invalid input yields clear errors
+  - Existing tests pass, and new tests are added if needed
 
 scope:
   code:
@@ -20,5 +20,5 @@ scope:
     - tests/plugins/test_builtin_desktop_planner_config.py
 
 notes:
-  - 互換性が変わる場合は PLAN と TASK に変更理由を追記する
+  - If compatibility changes, record the rationale in the PLAN and TASK
 

@@ -1,0 +1,36 @@
+---
+description: Nucleus repo-wide AI rules (safety + workflow)
+alwaysApply: true
+---
+# Nucleus: Global Rules (Cursor)
+
+AI agents working in this repository must follow these rules with highest priority.
+
+## Language
+- Do not hardcode language here. Follow higher-level instructions (default: English).
+
+## Cross-chat continuity
+- Raw chat logs are not automatically loaded in new chats.
+- **Read `ai/memory.md` first** (attach via `@ai/memory.md` when needed).
+
+## Safety
+- **No destructive operations** (delete/overwrite/move) without an explicit user request.
+  - `ai/` and `specs/` are especially important framework artifacts.
+- **No secrets**: do not output or commit credentials/tokens/PII.
+
+## Workflow
+- **Spec-driven**: start from `specs/`.
+- **Respect contracts**: do not break schemas/examples under `contracts/`.
+
+## Change discipline
+- Keep changes small and reviewable.
+- When possible, verify with `python -m unittest -q`.
+
+## Test-driven development (required)
+For any behavior change (feature/bugfix):
+- Write/update a test first (it should fail on current behavior).
+- Implement the minimal change to make the test pass.
+- Refactor and rerun tests.
+
+Do not ship behavior changes without tests unless you explicitly justify why tests are impractical and propose the smallest acceptable alternative verification.
+

@@ -4,6 +4,7 @@ import argparse
 import json
 import sys
 from pathlib import Path
+from typing import Any, Dict, List
 
 ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
@@ -14,7 +15,7 @@ from nucleus.core.kernel import Kernel
 from nucleus.core.runtime_context import RuntimeContext
 from nucleus.core.errors import ValidationError
 from nucleus.registry.plugin_registry import PluginRegistry
-from nucleus.plugins.builtin_desktop.planner import get_planner as get_builtin_desktop_planner
+from plugins.builtin_desktop.planner import get_planner as get_builtin_desktop_planner
 from nucleus.trace.replay import Replay
 
 
@@ -71,6 +72,14 @@ def _build_intent_from_args(args: argparse.Namespace) -> dict:
     params = {}
     if args.target_dir:
         params["target_dir"] = args.target_dir
+    if getattr(args, "include_dirs", False):
+        params["include_dirs"] = True
+    excludes = list(getattr(args, "exclude", []) or [])
+    if excludes:
+        params["exclude"] = excludes
+    overwrite_strategy = getattr(args, "overwrite_strategy", None)
+    if overwrite_strategy:
+        params["overwrite_strategy"] = overwrite_strategy
 
     # Scope: if none provided, default to target_dir (or "~/Desktop" when omitted).
     scope_roots = list(args.scope_root or [])
@@ -82,6 +91,77 @@ def _build_intent_from_args(args: argparse.Namespace) -> dict:
     return {"intent_id": intent_id, "params": params, "scope": scope, "context": context}
 
 
+def _preflight_scan_entries(*, kernel: Kernel, plugins_intent: dict, run_id: str, trace_path: Path) -> List[Dict[str, Any]]:
+    """
+    Scan target_dir via deterministic tools (fs.list + fs.stat) and return an entries snapshot
+    suitable for passing into plugin planner as params.entries.
+    """
+    params = plugins_intent.get("params", {}) if isinstance(plugins_intent.get("params"), dict) else {}
+    target_dir = params.get("target_dir", "~/Desktop")
+    if not isinstance(target_dir, str) or not target_dir:
+        target_dir = "~/Desktop"
+
+    scope = plugins_intent.get("scope", {})
+    if not isinstance(scope, dict):
+        scope = {"fs_roots": [target_dir], "allow_network": False}
+
+    ctx = RuntimeContext(
+        run_id=run_id,
+        dry_run=True,
+        strict_dry_run=True,
+        allow_destructive=False,
+        trace_path=trace_path,
+    )
+
+    list_plan = {
+        "plan_id": "plan_preflight_list_001",
+        "intent": {"intent_id": "cli.preflight_list", "params": {}, "scope": scope, "context": {"source": "cli"}},
+        "steps": [
+            {"step_id": "list", "title": "List target", "phase": "staging", "tool": {"tool_id": "fs.list", "args": {"path": target_dir}, "dry_run_ok": True}}
+        ],
+    }
+    out = kernel.run_plan(ctx, list_plan)
+    list_res = next((r for r in out.get("results", []) if r.get("step_id") == "list"), None)
+    entries = []
+    if isinstance(list_res, dict):
+        o = list_res.get("output", {})
+        if isinstance(o, dict) and isinstance(o.get("entries"), list):
+            entries = [e for e in o.get("entries") if isinstance(e, str)]
+
+    # Build a stat plan for each entry (to filter out directories).
+    stat_steps = []
+    for i, name in enumerate(entries, start=1):
+        stat_steps.append(
+            {
+                "step_id": f"stat_{i:04d}",
+                "title": f"Stat: {name}",
+                "phase": "staging",
+                "tool": {"tool_id": "fs.stat", "args": {"path": f"{target_dir}/{name}"}, "dry_run_ok": True},
+            }
+        )
+
+    if not stat_steps:
+        return []
+
+    stat_plan = {
+        "plan_id": "plan_preflight_stat_001",
+        "intent": {"intent_id": "cli.preflight_stat", "params": {}, "scope": scope, "context": {"source": "cli"}},
+        "steps": stat_steps,
+    }
+    out2 = kernel.run_plan(ctx, stat_plan)
+    results = out2.get("results", [])
+    snapshot: List[Dict[str, Any]] = []
+    if isinstance(results, list):
+        # Map back by index (deterministic; stable across run)
+        for i, name in enumerate(entries, start=1):
+            step_id = f"stat_{i:04d}"
+            r = next((x for x in results if isinstance(x, dict) and x.get("step_id") == step_id), None)
+            o = r.get("output", {}) if isinstance(r, dict) else {}
+            if isinstance(o, dict):
+                snapshot.append({"name": name, "is_file": bool(o.get("is_file", False)), "is_dir": bool(o.get("is_dir", False))})
+    return snapshot
+
+
 def cmd_dry_run_intent(args: argparse.Namespace) -> int:
     plugins_dir = Path(args.plugins_dir) if args.plugins_dir else _default_plugins_dir()
     reg = _load_plugins(plugins_dir)
@@ -91,6 +171,11 @@ def cmd_dry_run_intent(args: argparse.Namespace) -> int:
     intent = _build_intent_from_args(args)
     tools = build_tool_registry()
     kernel = Kernel(tools)
+    if args.scan:
+        scan_trace = Path(args.trace).with_suffix(".preflight.jsonl")
+        intent["params"]["entries"] = _preflight_scan_entries(
+            kernel=kernel, plugins_intent=intent, run_id=f"{args.run_id}_preflight", trace_path=scan_trace
+        )
     ctx = RuntimeContext(
         run_id=args.run_id,
         dry_run=True,
@@ -112,6 +197,11 @@ def cmd_run_intent(args: argparse.Namespace) -> int:
     intent = _build_intent_from_args(args)
     tools = build_tool_registry()
     kernel = Kernel(tools)
+    if args.scan:
+        scan_trace = Path(args.trace).with_suffix(".preflight.jsonl")
+        intent["params"]["entries"] = _preflight_scan_entries(
+            kernel=kernel, plugins_intent=intent, run_id=f"{args.run_id}_preflight", trace_path=scan_trace
+        )
     ctx = RuntimeContext(
         run_id=args.run_id,
         dry_run=False,
@@ -217,6 +307,14 @@ def main(argv=None) -> int:
     p_dry_intent = sub.add_parser("dry-run-intent", help="Resolve intent via plugins, plan deterministically, then dry-run")
     p_dry_intent.add_argument("--intent", required=True, help="Intent ID (e.g., desktop.tidy)")
     p_dry_intent.add_argument("--target-dir", help="Plugin param: target_dir (default: ~/Desktop)")
+    p_dry_intent.add_argument("--include-dirs", action="store_true", help="Also move directories (default: false)")
+    p_dry_intent.add_argument("--exclude", action="append", default=[], help="Exclude entry name by glob pattern (repeatable)")
+    p_dry_intent.add_argument(
+        "--overwrite-strategy",
+        default="error",
+        choices=["error", "overwrite", "skip"],
+        help="When destination exists: error|overwrite|skip (default: error)",
+    )
     p_dry_intent.add_argument(
         "--scope-root",
         action="append",
@@ -226,11 +324,20 @@ def main(argv=None) -> int:
     p_dry_intent.add_argument("--plugins-dir", default=str(_default_plugins_dir()), help="Plugins directory")
     p_dry_intent.add_argument("--trace", default="trace.jsonl", help="Trace output path (jsonl)")
     p_dry_intent.add_argument("--run-id", default="run_cli", help="Run ID for trace correlation")
+    p_dry_intent.add_argument("--scan", action="store_true", help="Preflight scan target_dir via tools and pass entries into planner")
     p_dry_intent.set_defaults(func=cmd_dry_run_intent)
 
     p_run_intent = sub.add_parser("run-intent", help="Resolve intent via plugins, plan deterministically, then execute")
     p_run_intent.add_argument("--intent", required=True, help="Intent ID (e.g., desktop.tidy)")
     p_run_intent.add_argument("--target-dir", help="Plugin param: target_dir (default: ~/Desktop)")
+    p_run_intent.add_argument("--include-dirs", action="store_true", help="Also move directories (default: false)")
+    p_run_intent.add_argument("--exclude", action="append", default=[], help="Exclude entry name by glob pattern (repeatable)")
+    p_run_intent.add_argument(
+        "--overwrite-strategy",
+        default="error",
+        choices=["error", "overwrite", "skip"],
+        help="When destination exists: error|overwrite|skip (default: error)",
+    )
     p_run_intent.add_argument(
         "--scope-root",
         action="append",
@@ -241,6 +348,7 @@ def main(argv=None) -> int:
     p_run_intent.add_argument("--trace", default="trace.jsonl", help="Trace output path (jsonl)")
     p_run_intent.add_argument("--run-id", default="run_cli", help="Run ID for trace correlation")
     p_run_intent.add_argument("--allow-destructive", action="store_true", help="Allow destructive tools (still policy-checked)")
+    p_run_intent.add_argument("--scan", action="store_true", help="Preflight scan target_dir via tools and pass entries into planner")
     p_run_intent.set_defaults(func=cmd_run_intent)
 
     ns = parser.parse_args(argv)

@@ -75,7 +75,12 @@ def build_tool_registry() -> ToolRegistry:
         {
             "type": "object",
             "additionalProperties": False,
-            "properties": {"from": {"type": "string"}, "to": {"type": "string"}, "overwrite": {"type": "boolean"}},
+            "properties": {
+                "from": {"type": "string"},
+                "to": {"type": "string"},
+                "overwrite": {"type": "boolean"},
+                "on_conflict": {"type": "string", "enum": ["error", "overwrite", "skip"]},
+            },
             "required": ["from", "to"],
         },
         fs_move,

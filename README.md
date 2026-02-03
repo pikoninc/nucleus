@@ -138,8 +138,13 @@ python -m nucleus.cli.nuc list-intents --json
 Dry-run `desktop.tidy` (reference plugin; safe default):
 
 ```bash
-python -m nucleus.cli.nuc dry-run-intent --intent desktop.tidy --target-dir . --trace /tmp/trace.jsonl
+python -m nucleus.cli.nuc dry-run-intent --intent desktop.tidy --target-dir . --scope-root . --scan --trace /tmp/trace.jsonl
 ```
+
+Rule options (all optional):
+- `--include-dirs`: also move directories (default: off)
+- `--exclude PATTERN`: exclude by glob against entry name (repeatable), e.g. `--exclude '*.tmp' --exclude '*.log'`
+- `--overwrite-strategy {error,overwrite,skip}`: when destination exists (default: `error`)
 
 Execute a plan JSON directly:
 

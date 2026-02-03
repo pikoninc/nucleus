@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Dict, Optional
 
 from .trace_store_jsonl import TraceStoreJSONL
 
@@ -15,14 +15,14 @@ class TraceEmitter:
         self,
         event_type: str,
         *,
-        intent_id: str | None = None,
-        plan_id: str | None = None,
-        step_id: str | None = None,
-        policy: dict[str, Any] | None = None,
-        message: str | None = None,
-        data: dict[str, Any] | None = None,
+        intent_id: Optional[str] = None,
+        plan_id: Optional[str] = None,
+        step_id: Optional[str] = None,
+        policy: Optional[Dict[str, Any]] = None,
+        message: Optional[str] = None,
+        data: Optional[Dict[str, Any]] = None,
     ) -> None:
-        event: dict[str, Any] = {
+        event: Dict[str, Any] = {
             "ts": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
             "run_id": self._run_id,
             "event_type": event_type,

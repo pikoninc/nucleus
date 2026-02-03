@@ -1,11 +1,11 @@
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Dict
 
 from ._path import expand_user_path
 
 
-def run(args: dict[str, Any], dry_run: bool) -> dict[str, Any]:
+def run(args: Dict[str, Any], dry_run: bool) -> Dict[str, Any]:
     """
     List directory entries (read-only; dry-run identical).
     args:

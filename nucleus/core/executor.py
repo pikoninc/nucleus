@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Dict, List, Optional
 
 from .errors import ToolExecutionError, ToolNotFound, ValidationError
 from .runtime_context import RuntimeContext
@@ -18,7 +18,7 @@ class Executor:
         self._tools = tool_registry
         self._trace = trace
 
-    def execute(self, ctx: RuntimeContext, plan: dict[str, Any]) -> dict[str, Any]:
+    def execute(self, ctx: RuntimeContext, plan: Dict[str, Any]) -> Dict[str, Any]:
         if not isinstance(plan, dict):
             raise ValidationError(code="plan.invalid", message="Plan must be an object")
 
@@ -27,7 +27,7 @@ class Executor:
             raise ValidationError(code="plan.invalid", message="plan_id must be a non-empty string")
 
         intent = plan.get("intent") if isinstance(plan.get("intent"), dict) else {}
-        intent_id = intent.get("intent_id") if isinstance(intent.get("intent_id"), str) else None
+        intent_id = intent.get("intent_id") if isinstance(intent.get("intent_id"), str) else None  # type: Optional[str]
 
         steps = plan.get("steps")
         if not isinstance(steps, list) or len(steps) < 1:
@@ -35,7 +35,7 @@ class Executor:
 
         self._trace.emit("plan_generated", intent_id=intent_id, plan_id=plan_id, message="Plan ready for execution")
 
-        results: list[dict[str, Any]] = []
+        results = []  # type: List[Dict[str, Any]]
         for step in steps:
             if not isinstance(step, dict):
                 raise ValidationError(code="plan.step_invalid", message="Step must be an object")

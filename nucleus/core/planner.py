@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from copy import deepcopy
-from typing import Any
+from typing import Any, Dict
 
 from .errors import ValidationError
 
@@ -17,7 +17,7 @@ class Planner(ABC):
     """
 
     @abstractmethod
-    def plan(self, intent: dict[str, Any]) -> dict[str, Any]:
+    def plan(self, intent: Dict[str, Any]) -> Dict[str, Any]:
         raise NotImplementedError
 
 
@@ -27,10 +27,10 @@ class StaticPlanner(Planner):
     Returns a predefined plan template and injects the provided intent.
     """
 
-    def __init__(self, plan_template: dict[str, Any]):
+    def __init__(self, plan_template: Dict[str, Any]):
         self._template = deepcopy(plan_template)
 
-    def plan(self, intent: dict[str, Any]) -> dict[str, Any]:
+    def plan(self, intent: Dict[str, Any]) -> Dict[str, Any]:
         if not isinstance(intent, dict):
             raise ValidationError(code="intent.invalid", message="Intent must be an object")
 

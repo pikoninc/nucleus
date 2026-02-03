@@ -1,9 +1,9 @@
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Dict
 
 
-def run(args: dict[str, Any], dry_run: bool) -> dict[str, Any]:
+def run(args: Dict[str, Any], dry_run: bool) -> Dict[str, Any]:
     """
     Open an application or file.
 

@@ -4,6 +4,7 @@ from .permission_guard import PermissionGuard
 from .executor import Executor
 from .planner import Planner, StaticPlanner
 from .intent_router import IntentRouter, Route
+from .kernel import Kernel
 
 __all__ = [
   "RuntimeContext",
@@ -15,5 +16,6 @@ __all__ = [
   "StaticPlanner",
   "IntentRouter",
   "Route",
+  "Kernel",
 ]
 

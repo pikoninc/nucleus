@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Dict, List, Optional
 
 from .errors import PolicyDenied, ValidationError
 from .runtime_context import RuntimeContext
@@ -11,8 +11,8 @@ from ..registry.tool_registry import ToolRegistry
 @dataclass(frozen=True)
 class PolicyResult:
     decision: str  # allow|deny
-    reason_codes: list[str]
-    summary: str | None = None
+    reason_codes: List[str]
+    summary: Optional[str] = None
 
 
 class PolicyEngine:
@@ -29,8 +29,8 @@ class PolicyEngine:
     def __init__(self, tool_registry: ToolRegistry):
         self._tools = tool_registry
 
-    def evaluate(self, ctx: RuntimeContext, plan: dict[str, Any]) -> PolicyResult:
-        reasons: list[str] = []
+    def evaluate(self, ctx: RuntimeContext, plan: Dict[str, Any]) -> PolicyResult:
+        reasons: List[str] = []
 
         intent = plan.get("intent")
         if not isinstance(intent, dict):
@@ -85,5 +85,9 @@ class PolicyEngine:
 
     def require_allow(self, result: PolicyResult) -> None:
         if result.decision != "allow":
-            raise PolicyDenied(code="policy.denied", message=result.summary or "Denied by policy", data={"reasons": result.reason_codes})
+            raise PolicyDenied(
+                code="policy.denied",
+                message=result.summary or "Denied by policy",
+                data={"reasons": result.reason_codes},
+            )
 

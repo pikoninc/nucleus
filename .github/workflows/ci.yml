@@ -15,5 +15,5 @@ jobs:
       - name: Check contracts
         run: python scripts/check_contracts.py
       - name: Run unit tests
-        run: python -m unittest discover -s tests -p "test_*.py"
+        run: python -m unittest discover -s tests -t . -p "test_*.py"
 

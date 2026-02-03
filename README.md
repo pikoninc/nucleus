@@ -118,6 +118,34 @@ Plugins define *what* to do, not *how* to execute.
 A plugin:
 - declares supported intents
 - generates Plans
+
+---
+
+## Developer quickstart (CLI)
+
+List tools:
+
+```bash
+python -m nucleus.cli.nuc list-tools --json
+```
+
+List plugin-provided intents (loads manifests from `plugins/`):
+
+```bash
+python -m nucleus.cli.nuc list-intents --json
+```
+
+Dry-run `desktop.tidy` (reference plugin; safe default):
+
+```bash
+python -m nucleus.cli.nuc dry-run-intent --intent desktop.tidy --target-dir . --trace /tmp/trace.jsonl
+```
+
+Execute a plan JSON directly:
+
+```bash
+python -m nucleus.cli.nuc run-plan --plan contracts/core/examples/plan.example.json --trace /tmp/trace.jsonl
+```
 - selects tools
 - follows core contracts
 

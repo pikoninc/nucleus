@@ -7,6 +7,7 @@ from typing import Any, Dict, Iterable, List, Optional
 
 from nucleus.contract_store import ContractStore
 from nucleus.core.errors import ValidationError
+from nucleus.resources import core_contracts_schemas_dir
 
 
 @dataclass(frozen=True)
@@ -30,9 +31,7 @@ class PluginManifest:
 
 
 def _core_contracts() -> ContractStore:
-    root = Path(__file__).resolve().parents[2]
-    schemas_dir = root / "contracts" / "core" / "schemas"
-    store = ContractStore(schemas_dir)
+    store = ContractStore(core_contracts_schemas_dir())
     store.load()
     return store
 

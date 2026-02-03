@@ -4,7 +4,15 @@
 Nucleus is a **plan-first execution runtime** that turns human intent into safe, deterministic actions:
 **Intent → Plan → Act → Trace**.
 
-Nucleus is NOT an app. Apps are plugins.
+Nucleus is a **framework runtime**, not an autonomous agent.
+
+## Processing units (App / Plugin)
+Nucleus supports **processing units** that implement domain behavior while the kernel remains deterministic.
+
+- **App**: application-level processing unit (often the entry point / integrator).
+- **Plugin**: domain-focused processing unit designed for reuse across Apps.
+
+Apps and Plugins share the same structural model; the difference is **responsibility**, not mechanics.
 
 ## Scope
 This folder defines the Nucleus framework:
@@ -15,6 +23,9 @@ This folder defines the Nucleus framework:
 - Tool contracts (deterministic tools only)
 - Trace/audit model (event schema, storage, replay)
 - UI adapter I/O contracts (input/output as adapters)
+- AI-facing layers that produce/modify specs/config **without execution**:
+  - Input Intake (LLM): normalize ambiguous user input into a contract-shaped `Intent`
+  - Studio (LLM): propose configuration/manifest changes as reviewable patches (no tools)
 
 ## Non-Goals
 - Plugin-specific behavior (classification rules, domain heuristics)
@@ -71,5 +82,7 @@ This folder defines the Nucleus framework:
 - 05_tool_contracts.md
 - 06_trace_audit.md
 - 07_ui_adapters.md
+- 08_input_intake.md
+- 09_studio.md
 - adr/*
 

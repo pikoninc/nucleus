@@ -7,6 +7,7 @@ from nucleus.registry.tool_registry import ToolRegistry
 from nucleus.trace.trace_emitter import TraceEmitter
 from nucleus.trace.trace_store_jsonl import TraceStoreJSONL
 from nucleus.contract_store import ContractStore
+from nucleus.resources import core_contracts_schemas_dir
 
 from .executor import Executor
 from .planner import Planner
@@ -21,9 +22,7 @@ _CORE_CONTRACTS: Optional[ContractStore] = None
 def _core_contracts() -> ContractStore:
     global _CORE_CONTRACTS
     if _CORE_CONTRACTS is None:
-        root = Path(__file__).resolve().parents[2]
-        schemas_dir = root / "contracts" / "core" / "schemas"
-        store = ContractStore(schemas_dir)
+        store = ContractStore(core_contracts_schemas_dir())
         store.load()
         _CORE_CONTRACTS = store
     return _CORE_CONTRACTS

@@ -2,20 +2,19 @@ from __future__ import annotations
 
 import argparse
 import json
-import sys
+import re
+import shutil
 from pathlib import Path
 from typing import Any, Dict, List
 
 import yaml
 
-ROOT = Path(__file__).resolve().parents[2]
-if str(ROOT) not in sys.path:
-    sys.path.insert(0, str(ROOT))
-
 from nucleus.bootstrap_tools import build_tool_registry
+from nucleus.contract_store import ContractStore
 from nucleus.core.kernel import Kernel
 from nucleus.core.runtime_context import RuntimeContext
 from nucleus.core.errors import ValidationError
+from nucleus.resources import core_contracts_examples_dir, core_contracts_schemas_dir, plugins_dir
 from nucleus.registry.plugin_registry import PluginRegistry
 from plugins.builtin_desktop.planner import get_planner as get_builtin_desktop_planner
 from nucleus.trace.replay import Replay
@@ -23,6 +22,271 @@ from nucleus.trace.replay import Replay
 
 def _load_json(path: Path):
     return json.loads(path.read_text(encoding="utf-8"))
+
+
+_APP_ID_RE = re.compile(r"^[a-z][a-z0-9_-]{1,63}$")
+
+
+def _validate_app_id(app_id: str) -> str:
+    app_id = app_id.strip()
+    if not app_id or app_id in (".", ".."):
+        raise ValidationError(code="init.invalid", message="app_id must be non-empty")
+    if "/" in app_id or "\\" in app_id:
+        raise ValidationError(code="init.invalid", message="app_id must not contain path separators")
+    if not _APP_ID_RE.match(app_id):
+        raise ValidationError(
+            code="init.invalid",
+            message="app_id must match: ^[a-z][a-z0-9_-]{1,63}$ (e.g. my_app, my-app)",
+            data={"app_id": app_id},
+        )
+    return app_id
+
+
+def _prompt(text: str, *, default: str | None = None) -> str:
+    suffix = f" [{default}]" if default else ""
+    v = input(f"{text}{suffix}: ").strip()
+    if not v and default is not None:
+        return default
+    return v
+
+
+def _confirm_bool(text: str, *, default: bool = False) -> bool:
+    d = "Y/n" if default else "y/N"
+    v = input(f"{text} ({d}): ").strip().lower()
+    if not v:
+        return bool(default)
+    return v in ("y", "yes")
+
+
+def _write_text(path: Path, content: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(content, encoding="utf-8")
+
+
+def _render_app_pyproject(*, app_id: str, app_name: str) -> str:
+    return "\n".join(
+        [
+            "[build-system]",
+            'requires = ["setuptools>=68", "wheel"]',
+            'build-backend = "setuptools.build_meta"',
+            "",
+            "[project]",
+            f'name = "{app_id}"',
+            'version = "0.1.0"',
+            f'description = "{app_name} (Nucleus app)"',
+            'readme = "README.md"',
+            'requires-python = ">=3.10"',
+            "dependencies = [",
+            '  "nucleus>=0.1.0",',
+            "]",
+            "",
+            "[tool.setuptools.packages.find]",
+            'where = ["src"]',
+            "",
+        ]
+    ) + "\n"
+
+
+def _scaffold_app_dir(*, project_dir: Path, app_id: str, app_name: str) -> None:
+    package_name = app_id.replace("-", "_")
+
+    _write_text(
+        project_dir / "README.md",
+        "\n".join(
+            [
+                f"# {app_name}",
+                "",
+                "This repository was bootstrapped by `nuc init`.",
+                "",
+                "## Getting started",
+                "",
+                "```bash",
+                "python -m venv .venv",
+                "source .venv/bin/activate",
+                "pip install -U pip",
+                "pip install -e .",
+                "```",
+                "",
+                "## Specs",
+                "",
+                "- See `specs/` for spec-driven development starting points.",
+                "",
+            ]
+        )
+        + "\n",
+    )
+    _write_text(
+        project_dir / ".gitignore",
+        "\n".join(
+            [
+                ".venv/",
+                "__pycache__/",
+                "*.pyc",
+                ".pytest_cache/",
+                "dist/",
+                "build/",
+                "*.egg-info/",
+                "",
+            ]
+        ),
+    )
+    _write_text(project_dir / "pyproject.toml", _render_app_pyproject(app_id=app_id, app_name=app_name))
+
+    _write_text(project_dir / "src" / package_name / "__init__.py", '__all__ = ["__version__"]\n\n__version__ = "0.1.0"\n')
+    _write_text(
+        project_dir / "src" / package_name / "app.py",
+        "\n".join(
+            [
+                "from __future__ import annotations",
+                "",
+                "def main() -> int:",
+                f'    print("Hello from {app_name} ({app_id})")',
+                "    return 0",
+                "",
+                'if __name__ == "__main__":',
+                "    raise SystemExit(main())",
+                "",
+            ]
+        ),
+    )
+
+    _write_text(
+        project_dir / "specs" / "INDEX.md",
+        "\n".join(
+            [
+                f"# Specs: {app_name}",
+                "",
+                "- `00_overview.md`",
+                "- `01_architecture.md`",
+                "",
+            ]
+        ),
+    )
+    _write_text(
+        project_dir / "specs" / "00_overview.md",
+        "\n".join(
+            [
+                f"# {app_name} — Overview",
+                "",
+                "## Goal",
+                "- TODO: Describe what this app should do.",
+                "",
+                "## Non-goals",
+                "- TODO",
+                "",
+                "## Constraints",
+                "- TODO",
+                "",
+            ]
+        ),
+    )
+    _write_text(
+        project_dir / "specs" / "01_architecture.md",
+        "\n".join(
+            [
+                f"# {app_name} — Architecture",
+                "",
+                "## Components",
+                "- TODO",
+                "",
+                "## Data & contracts",
+                "- TODO",
+                "",
+                "## Safety / policy",
+                "- TODO",
+                "",
+            ]
+        ),
+    )
+
+    _write_text(
+        project_dir / "ai" / "README.md",
+        "\n".join(
+            [
+                "# AI workspace",
+                "",
+                "This folder is for app-local AI collaboration artifacts (plans, notes, run logs).",
+                "",
+                "Keep specs authoritative under `specs/`.",
+                "",
+            ]
+        ),
+    )
+
+
+def _maybe_prune_framework_artifacts(*, cwd: Path, interactive: bool) -> None:
+    targets = [cwd / "ai", cwd / "specs"]
+    existing = [p for p in targets if p.exists()]
+    if not existing:
+        return
+
+    if not interactive:
+        raise ValidationError(
+            code="init.prune_requires_confirmation",
+            message="Refusing to delete existing framework artifacts without interactive confirmation",
+            data={"paths": [str(p) for p in existing]},
+        )
+
+    print("以下のディレクトリを削除します（フレームワーク開発用成果物の剪定）:")
+    for p in existing:
+        print(f"- {p}")
+    print("")
+    token = input("本当に削除する場合は 'DELETE' と入力してください: ").strip()
+    if token != "DELETE":
+        print("削除をスキップしました。")
+        return
+
+    for p in existing:
+        if p.is_dir():
+            shutil.rmtree(p)
+        else:
+            p.unlink()
+    print("削除しました。")
+
+
+def cmd_init(args: argparse.Namespace) -> int:
+    cwd = Path.cwd()
+    interactive = not bool(getattr(args, "no_input", False))
+
+    app_id = args.app_id
+    app_name = args.name
+
+    if not app_id and not interactive:
+        raise ValidationError(code="init.invalid", message="--app-id is required when --no-input is set")
+
+    if interactive:
+        if not app_id:
+            app_id = _prompt("アプリID（ディレクトリ名）", default="my_app")
+        app_id = _validate_app_id(str(app_id))
+        if not app_name:
+            app_name = _prompt("アプリ名（表示名）", default=app_id)
+        prune = bool(getattr(args, "prune_framework_artifacts", False))
+        if not prune:
+            prune = _confirm_bool("このディレクトリのフレームワーク用 `ai/` と `specs/` を削除しますか？", default=False)
+        if prune:
+            _maybe_prune_framework_artifacts(cwd=cwd, interactive=True)
+    else:
+        app_id = _validate_app_id(str(app_id))
+        if not app_name:
+            app_name = app_id
+        if bool(getattr(args, "prune_framework_artifacts", False)):
+            _maybe_prune_framework_artifacts(cwd=cwd, interactive=False)
+
+    base = Path(args.target_dir or ".").expanduser()
+    project_dir = base / str(app_id)
+
+    if project_dir.exists():
+        if not bool(args.force):
+            raise ValidationError(
+                code="init.target_exists",
+                message=f"Target already exists: {project_dir} (use --force to overwrite)",
+                data={"target": str(project_dir)},
+            )
+        shutil.rmtree(project_dir)
+
+    _scaffold_app_dir(project_dir=project_dir, app_id=str(app_id), app_name=str(app_name))
+    print(f"OK: {project_dir} を作成しました。")
+    return 0
 
 
 def _load_desktop_rules_paths(config_path: str) -> tuple[str, str]:
@@ -47,9 +311,45 @@ def _load_desktop_rules_paths(config_path: str) -> tuple[str, str]:
 
 
 def cmd_check_contracts(_args: argparse.Namespace) -> int:
-    from scripts.check_contracts import main as check_main  # local import to avoid sys.path issues
+    schemas_dir = core_contracts_schemas_dir()
+    examples_dir = core_contracts_examples_dir()
 
-    return int(check_main())
+    store = ContractStore(schemas_dir)
+    store.load()
+
+    schema_errors = store.check_schemas()
+    if schema_errors:
+        print("Schema validation failed:")
+        for name, err in schema_errors:
+            print("- {}: {}".format(name, err))
+        return 1
+
+    failures = []
+    failures.extend([("intent.example.json", store.validate_json_file("intent.schema.json", examples_dir / "intent.example.json"))])
+    failures.extend([("plan.example.json", store.validate_json_file("plan.schema.json", examples_dir / "plan.example.json"))])
+    failures.extend(
+        [
+            (
+                "plugin_manifest.example.json",
+                store.validate_json_file("plugin_manifest.schema.json", examples_dir / "plugin_manifest.example.json"),
+            )
+        ]
+    )
+    failures.extend([("trace.sample.jsonl", store.validate_jsonl_file("trace_event.schema.json", examples_dir / "trace.sample.jsonl"))])
+
+    ok = True
+    for name, errs in failures:
+        if errs:
+            ok = False
+            print("Example {} failed validation:".format(name))
+            for e in errs:
+                print("  - {}".format(e))
+
+    if not ok:
+        return 1
+
+    print("Contracts OK")
+    return 0
 
 def cmd_list_tools(args: argparse.Namespace) -> int:
     tools = build_tool_registry()
@@ -63,7 +363,7 @@ def cmd_list_tools(args: argparse.Namespace) -> int:
 
 
 def _default_plugins_dir() -> Path:
-    return ROOT / "plugins"
+    return plugins_dir()
 
 
 def _load_plugins(plugins_dir: Path) -> PluginRegistry:

@@ -1,0 +1,39 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "nucleus"
+description = "Spec-driven, AI-augmented runtime framework with deterministic execution and traceability."
+readme = "README.md"
+requires-python = ">=3.10"
+authors = [{ name = "Nucleus Contributors" }]
+keywords = ["ai", "framework", "spec-driven", "deterministic", "runtime"]
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "Operating System :: OS Independent",
+]
+dynamic = ["version"]
+dependencies = [
+  "jsonschema>=4.21.0,<5",
+  "PyYAML>=6.0.1,<7",
+]
+
+[project.scripts]
+nuc = "nucleus.cli.nuc:main"
+nucleus = "nucleus.cli.nuc:main"
+
+[tool.setuptools]
+include-package-data = true
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["nucleus*", "plugins*", "tools*", "contracts*"]
+
+[tool.setuptools.dynamic]
+version = { attr = "nucleus.__version__" }
+
+[tool.setuptools.package-data]
+plugins = ["**/*.json", "**/*.yml", "**/*.yaml"]
+contracts = ["**/*.json", "**/*.yml", "**/*.yaml"]
+

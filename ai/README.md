@@ -17,7 +17,9 @@ Its goal is to keep changes to the Nucleus codebase (e.g. `nucleus/`, `contracts
 ### What does NOT go here (not versioned)
 
 - `.sessions/`: Conversation logs, raw outputs, patch fragments, etc. (**must not be committed**).
-  - Excluded via `ai/.sessions/` in the repo root `.gitignore`.
+  - Excluded via ignore rules:
+    - repo root `.gitignore` ignores `ai/.sessions/*`
+    - `ai/.sessions/.gitignore` keeps the directory present but ignores all contents
 
 ### Naming conventions (recommended)
 
@@ -30,4 +32,12 @@ Its goal is to keep changes to the Nucleus codebase (e.g. `nucleus/`, `contracts
 - **Public/reviewable**: Keep `ai/` contents at a granularity that is safe to review and (in principle) share.
 - **Secrets go to `.sessions/`**: Do not put tokens, PII, customer names, private URLs, internal-only procedures, or raw logs here.
 - **Reproducibility**: Prefer deterministic scripts; keep outputs in diff-friendly formats (YAML/JSON).
+
+### Saving Cursor conversation logs (recommended)
+If you use Cursor, the agent conversation transcripts are stored outside the repo under `~/.cursor/projects/*/agent-transcripts/`.
+To sync them into `ai/.sessions/` (still ignored by git), run:
+
+```bash
+python ai/scripts/sync_cursor_transcripts.py
+```
 

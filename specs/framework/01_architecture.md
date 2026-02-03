@@ -4,7 +4,8 @@ Nucleus orchestrates a deterministic runtime:
 
 ```mermaid
 flowchart TD
-  uiIn[UI_Input_Adapter] --> intent[Intent]
+  uiIn[User / UI] --> intake[InputIntake (LLM, no tools)]
+  intake --> intent[Intent]
   intent --> router[IntentRouter]
   router --> planner[Planner]
   planner --> plan[Plan]
@@ -16,17 +17,22 @@ flowchart TD
   trace --> store[TraceStore_JSONL]
   store --> replay[Replay]
   exec --> uiOut[UI_Output_Adapter]
+
+  studio[Studio (LLM, no tools)] -.-> specs[Specs / Config / Manifests]
+  specs -.-> planner
 ```
 
 ## Components
-- **UI adapters**: convert external input/output into framework contracts (`Intent`, execution summaries, trace).
+- **Input Intake (LLM)**: normalizes ambiguous user input into a contract-shaped `Intent`. No execution, no tool access.
+- **UI adapters**: convert external input/output into framework contracts (`Intent`, execution summaries, trace). Intake can be implemented inside an input adapter or as a separate service.
 - **IntentRouter**: resolves `intent_id` to a handler (usually via plugin manifest/registry).
-- **Planner**: produces a `Plan` from an `Intent`. Planning is a *separate* step from execution.
+- **Planner / Compiler**: produces a `Plan` from an `Intent` (and optionally manifests/config). Planning is a *separate* step from execution.
 - **PolicyEngine**: evaluates safety invariants and authorization rules against a `Plan`.
 - **PermissionGuard**: final gate right before execution; deny-by-default for unsafe operations.
 - **Executor**: runs each `Plan.step` via deterministic tools (supports dry-run).
 - **TraceEmitter/Store**: emits every decision and step as `TraceEvent` and stores as JSONL.
 - **Replay**: deterministic replay of traces for audit/debug.
+- **Studio (LLM)**: proposes changes to specs/config/manifests as reviewable patches. No execution, no tool access; outputs are human-reviewed before they influence planning.
 
 ## Determinism boundaries
 - Execution is deterministic given (Plan, Tool inputs, environment constraints).

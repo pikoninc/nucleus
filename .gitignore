@@ -33,5 +33,6 @@ dist/
 trace.jsonl
 
 # AI working area (conversation logs are not versioned)
-ai/.sessions/
+ai/.sessions/*
+!ai/.sessions/.gitignore
 

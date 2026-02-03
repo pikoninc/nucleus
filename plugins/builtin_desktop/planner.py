@@ -12,6 +12,7 @@ import yaml
 
 from nucleus.core.errors import ValidationError
 from nucleus.core.planner import Planner
+from nucleus.resources import plugin_contract_schema_path
 
 
 class BuiltinDesktopPlanner(Planner):
@@ -94,14 +95,7 @@ class BuiltinDesktopPlanner(Planner):
         if not isinstance(raw, dict):
             raise ValidationError(code="config.invalid", message="Config must be a YAML mapping/object at top-level")
 
-        schema_path = (
-            Path(__file__).resolve().parents[2]
-            / "contracts"
-            / "plugins"
-            / "builtin.desktop"
-            / "schemas"
-            / "desktop_rules.schema.json"
-        )
+        schema_path = plugin_contract_schema_path("builtin.desktop", "desktop_rules.schema.json")
         try:
             schema = json.loads(schema_path.read_text(encoding="utf-8"))
         except Exception as e:  # noqa: BLE001

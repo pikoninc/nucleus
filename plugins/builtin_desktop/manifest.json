@@ -4,15 +4,27 @@
   "contracts_core_version": "0.1.0",
   "intents": [
     {
-      "intent_id": "desktop.tidy",
-      "description": "Organize desktop without deleting."
+      "intent_id": "desktop.tidy.run",
+      "description": "Organize desktop using a user config file (deterministic).",
+      "params_schema_ref": "contracts/plugins/builtin.desktop/schemas/desktop_rules.schema.json"
     },
     {
-      "intent_id": "desktop.restore",
-      "description": "Restore desktop from staged moves without deleting."
+      "intent_id": "desktop.tidy.preview",
+      "description": "Preview tidy actions from config (dry-run friendly).",
+      "params_schema_ref": "contracts/plugins/builtin.desktop/schemas/desktop_rules.schema.json"
+    },
+    {
+      "intent_id": "desktop.tidy.restore",
+      "description": "Restore desktop from staging_dir using a user config file (deterministic).",
+      "params_schema_ref": "contracts/plugins/builtin.desktop/schemas/desktop_rules.schema.json"
+    },
+    {
+      "intent_id": "desktop.tidy.configure",
+      "description": "Scaffold a config file (human-in-the-loop; no execution).",
+      "params_schema_ref": "contracts/plugins/builtin.desktop/schemas/desktop_rules.schema.json"
     }
   ],
-  "tools_allowlist": ["fs.list", "fs.mkdir", "fs.move", "fs.stat", "notify.send"],
+  "tools_allowlist": ["fs.list", "fs.walk", "fs.mkdir", "fs.move", "fs.stat", "notify.send"],
   "ui_adapters": ["cli", "alfred"]
 }
 

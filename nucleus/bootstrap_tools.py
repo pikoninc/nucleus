@@ -9,6 +9,7 @@ from tools.fs.list import run as fs_list
 from tools.fs.mkdir import run as fs_mkdir
 from tools.fs.move import run as fs_move
 from tools.fs.stat import run as fs_stat
+from tools.fs.walk import run as fs_walk
 from tools.notify.send import run as notify_send
 
 
@@ -51,6 +52,23 @@ def build_tool_registry() -> ToolRegistry:
         fs_stat,
     )
     reg_tool(
+        "fs.walk",
+        "Walk directory entries recursively",
+        "filesystem",
+        True,
+        {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "path": {"type": "string"},
+                "max_depth": {"type": "integer", "minimum": 0},
+                "include_dirs": {"type": "boolean"},
+            },
+            "required": ["path"],
+        },
+        fs_walk,
+    )
+    reg_tool(
         "fs.mkdir",
         "Create a directory",
         "filesystem",
@@ -79,7 +97,7 @@ def build_tool_registry() -> ToolRegistry:
                 "from": {"type": "string"},
                 "to": {"type": "string"},
                 "overwrite": {"type": "boolean"},
-                "on_conflict": {"type": "string", "enum": ["error", "overwrite", "skip"]},
+                "on_conflict": {"type": "string", "enum": ["error", "overwrite", "skip", "suffix_increment"]},
             },
             "required": ["from", "to"],
         },

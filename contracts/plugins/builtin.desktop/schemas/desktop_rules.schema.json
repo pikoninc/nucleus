@@ -1,0 +1,130 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://nucleus.local/contracts/plugins/builtin.desktop/schemas/desktop_rules.schema.json",
+  "title": "builtin.desktop desktop tidy rules (YAML) v0.1",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "version": { "type": "string", "const": "0.1" },
+    "plugin": { "type": "string", "const": "builtin.desktop" },
+    "root": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "path": { "type": "string", "minLength": 1 },
+        "staging_dir": { "type": "string", "minLength": 1 }
+      },
+      "required": ["path", "staging_dir"]
+    },
+    "folders": {
+      "type": "object",
+      "additionalProperties": { "type": "string", "minLength": 1 },
+      "default": {}
+    },
+    "rules": {
+      "type": "array",
+      "default": [],
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "id": { "type": "string", "minLength": 1 },
+          "match": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "any": {
+                "type": "array",
+                "items": { "$ref": "#/$defs/MatchAtom" },
+                "default": []
+              },
+              "all": {
+                "type": "array",
+                "items": { "$ref": "#/$defs/MatchAtom" },
+                "default": []
+              }
+            },
+            "default": { "any": [], "all": [] }
+          },
+          "action": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "move_to": {
+                "type": "string",
+                "minLength": 1,
+                "description": "Folder key from `folders` (preferred) or a literal subfolder name under staging_dir."
+              }
+            },
+            "required": ["move_to"]
+          }
+        },
+        "required": ["id", "match", "action"]
+      }
+    },
+    "defaults": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "unmatched_action": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "move_to": { "type": "string", "minLength": 1 }
+          },
+          "required": ["move_to"]
+        }
+      }
+    },
+    "safety": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "no_delete": { "type": "boolean", "default": true },
+        "require_staging": { "type": "boolean", "default": true },
+        "collision_strategy": {
+          "type": "string",
+          "enum": ["error", "skip", "overwrite", "suffix_increment"],
+          "default": "suffix_increment"
+        },
+        "ignore_patterns": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 },
+          "default": []
+        }
+      },
+      "default": {}
+    }
+  },
+  "required": ["version", "plugin", "root", "rules"],
+  "$defs": {
+    "MatchAtom": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "filename_regex": { "type": "string", "minLength": 1 },
+        "ext_in": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 },
+          "minItems": 1
+        },
+        "mime_prefix": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Best-effort: builtin.desktop approximates mime by file extension."
+        },
+        "created_within_days": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Best-effort: implemented using mtime (modified time) on most platforms."
+        }
+      },
+      "oneOf": [
+        { "required": ["filename_regex"] },
+        { "required": ["ext_in"] },
+        { "required": ["mime_prefix"] },
+        { "required": ["created_within_days"] }
+      ]
+    }
+  }
+}

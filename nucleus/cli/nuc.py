@@ -6,6 +6,8 @@ import sys
 from pathlib import Path
 from typing import Any, Dict, List
 
+import yaml
+
 ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
@@ -21,6 +23,27 @@ from nucleus.trace.replay import Replay
 
 def _load_json(path: Path):
     return json.loads(path.read_text(encoding="utf-8"))
+
+
+def _load_desktop_rules_paths(config_path: str) -> tuple[str, str]:
+    """
+    Best-effort config reader used by CLI to set scope and preflight scans.
+    Schema validation is performed inside the plugin planner.
+    """
+    p = Path(config_path).expanduser()
+    raw = yaml.safe_load(p.read_text(encoding="utf-8"))
+    if not isinstance(raw, dict):
+        raise ValidationError(code="config.invalid", message="Config must be a YAML mapping/object at top-level")
+    root = raw.get("root", {})
+    if not isinstance(root, dict):
+        raise ValidationError(code="config.invalid", message="Config.root must be an object")
+    root_path = root.get("path")
+    staging_dir = root.get("staging_dir")
+    if not isinstance(root_path, str) or not root_path:
+        raise ValidationError(code="config.invalid", message="Config.root.path must be a non-empty string")
+    if not isinstance(staging_dir, str) or not staging_dir:
+        raise ValidationError(code="config.invalid", message="Config.root.staging_dir must be a non-empty string")
+    return (root_path, staging_dir)
 
 
 def cmd_check_contracts(_args: argparse.Namespace) -> int:
@@ -72,6 +95,8 @@ def _build_intent_from_args(args: argparse.Namespace) -> dict:
     params = {}
     if args.target_dir:
         params["target_dir"] = args.target_dir
+    if getattr(args, "config_path", None):
+        params["config_path"] = args.config_path
     if getattr(args, "include_dirs", False):
         params["include_dirs"] = True
     excludes = list(getattr(args, "exclude", []) or [])
@@ -84,7 +109,12 @@ def _build_intent_from_args(args: argparse.Namespace) -> dict:
     # Scope: if none provided, default to target_dir (or "~/Desktop" when omitted).
     scope_roots = list(args.scope_root or [])
     if not scope_roots:
-        scope_roots = [params.get("target_dir") or "~/Desktop"]
+        # If config_path is provided, include both root and staging_dir so policy scope checks pass.
+        if isinstance(params.get("config_path"), str) and params.get("config_path"):
+            root_path, staging_dir = _load_desktop_rules_paths(str(params["config_path"]))
+            scope_roots = [root_path, staging_dir]
+        else:
+            scope_roots = [params.get("target_dir") or "~/Desktop"]
 
     scope = {"fs_roots": scope_roots, "allow_network": False}
     context = {"source": "cli"}
@@ -97,9 +127,15 @@ def _preflight_scan_entries(*, kernel: Kernel, plugins_intent: dict, run_id: str
     suitable for passing into plugin planner as params.entries.
     """
     params = plugins_intent.get("params", {}) if isinstance(plugins_intent.get("params"), dict) else {}
-    target_dir = params.get("target_dir", "~/Desktop")
-    if not isinstance(target_dir, str) or not target_dir:
-        target_dir = "~/Desktop"
+    # Prefer config-driven root if config_path is provided.
+    config_path = params.get("config_path")
+    if isinstance(config_path, str) and config_path:
+        root_path, _staging_dir = _load_desktop_rules_paths(config_path)
+        target_dir = root_path
+    else:
+        target_dir = params.get("target_dir", "~/Desktop")
+        if not isinstance(target_dir, str) or not target_dir:
+            target_dir = "~/Desktop"
 
     scope = plugins_intent.get("scope", {})
     if not isinstance(scope, dict):
@@ -158,8 +194,187 @@ def _preflight_scan_entries(*, kernel: Kernel, plugins_intent: dict, run_id: str
             r = next((x for x in results if isinstance(x, dict) and x.get("step_id") == step_id), None)
             o = r.get("output", {}) if isinstance(r, dict) else {}
             if isinstance(o, dict):
-                snapshot.append({"name": name, "is_file": bool(o.get("is_file", False)), "is_dir": bool(o.get("is_dir", False))})
+                snapshot.append(
+                    {
+                        "name": name,
+                        "is_file": bool(o.get("is_file", False)),
+                        "is_dir": bool(o.get("is_dir", False)),
+                        "size": int(o.get("size")) if isinstance(o.get("size"), int) else None,
+                        "mtime": int(o.get("mtime")) if isinstance(o.get("mtime"), int) else None,
+                    }
+                )
     return snapshot
+
+
+def cmd_desktop_configure(args: argparse.Namespace) -> int:
+    root_path = args.root_path or "~/Desktop"
+    staging_dir = args.staging_dir or f"{root_path}_Staging"
+    out = (
+        "version: \"0.1\"\n"
+        "plugin: \"builtin.desktop\"\n\n"
+        "root:\n"
+        f"  path: \"{root_path}\"\n"
+        f"  staging_dir: \"{staging_dir}\"\n\n"
+        "folders:\n"
+        "  screenshots: \"Screenshots\"\n"
+        "  documents: \"Documents\"\n"
+        "  images: \"Images\"\n"
+        "  archives: \"Archives\"\n"
+        "  misc: \"Misc\"\n\n"
+        "rules:\n"
+        "  - id: \"rule_screenshots\"\n"
+        "    match:\n"
+        "      any:\n"
+        "        - filename_regex: \"^Screen Shot \"\n"
+        "        - filename_regex: \"^スクリーンショット\"\n"
+        "        - mime_prefix: \"image/\"\n"
+        "    action:\n"
+        "      move_to: \"screenshots\"\n\n"
+        "  - id: \"rule_docs\"\n"
+        "    match:\n"
+        "      any:\n"
+        "        - ext_in: [\"pdf\", \"docx\", \"xlsx\", \"pptx\", \"txt\", \"md\"]\n"
+        "    action:\n"
+        "      move_to: \"documents\"\n\n"
+        "defaults:\n"
+        "  unmatched_action:\n"
+        "    move_to: \"misc\"\n\n"
+        "safety:\n"
+        "  no_delete: true\n"
+        "  require_staging: true\n"
+        "  collision_strategy: \"suffix_increment\"\n"
+        "  ignore_patterns: [\".DS_Store\"]\n"
+    )
+    if args.output:
+        Path(args.output).expanduser().write_text(out, encoding="utf-8")
+    else:
+        print(out)
+    return 0
+
+
+def _run_desktop_intent_with_scan(*, intent_id: str, config_path: str, run_id: str, trace: str, execute: bool) -> int:
+    root_path, staging_dir = _load_desktop_rules_paths(config_path)
+
+    plugins_dir = _default_plugins_dir()
+    reg = _load_plugins(plugins_dir)
+    plugin_id = reg.require_plugin_id_for_intent(intent_id)
+    planner = _resolve_planner(plugin_id)
+
+    intent = {
+        "intent_id": intent_id,
+        "params": {"config_path": config_path},
+        "scope": {"fs_roots": [root_path, staging_dir], "allow_network": False},
+        "context": {"source": "cli"},
+    }
+
+    tools = build_tool_registry()
+    kernel = Kernel(tools)
+
+    scan_trace = Path(trace).with_suffix(".preflight.jsonl")
+    if intent_id in ("desktop.tidy.restore",):
+        intent["params"]["sorted_entries"] = _preflight_walk_entries(
+            kernel=kernel,
+            plugins_intent=intent,
+            root_path=staging_dir,
+            run_id=f"{run_id}_preflight",
+            trace_path=scan_trace,
+            include_dirs=False,
+        )
+    else:
+        # tidy.run / tidy.preview
+        intent["params"]["entries"] = _preflight_scan_entries(
+            kernel=kernel, plugins_intent=intent, run_id=f"{run_id}_preflight", trace_path=scan_trace
+        )
+
+    ctx = RuntimeContext(
+        run_id=run_id,
+        dry_run=not execute,
+        strict_dry_run=not execute,
+        allow_destructive=False,
+        trace_path=Path(trace),
+    )
+    out = kernel.run_intent(ctx, intent, planner)
+    print(json.dumps(out, ensure_ascii=False, indent=2))
+    return 0
+
+
+def cmd_desktop_preview(args: argparse.Namespace) -> int:
+    return _run_desktop_intent_with_scan(
+        intent_id="desktop.tidy.preview",
+        config_path=args.config_path,
+        run_id=args.run_id,
+        trace=args.trace,
+        execute=False,
+    )
+
+
+def cmd_desktop_run(args: argparse.Namespace) -> int:
+    return _run_desktop_intent_with_scan(
+        intent_id="desktop.tidy.run",
+        config_path=args.config_path,
+        run_id=args.run_id,
+        trace=args.trace,
+        execute=True,
+    )
+
+
+def cmd_desktop_restore(args: argparse.Namespace) -> int:
+    return _run_desktop_intent_with_scan(
+        intent_id="desktop.tidy.restore",
+        config_path=args.config_path,
+        run_id=args.run_id,
+        trace=args.trace,
+        execute=True,
+    )
+
+
+def _preflight_walk_entries(
+    *, kernel: Kernel, plugins_intent: dict, root_path: str, run_id: str, trace_path: Path, include_dirs: bool
+) -> List[Dict[str, Any]]:
+    """
+    Walk root_path via deterministic tool fs.walk and return entries:
+      [{"path": "relative/path", "is_file": bool, "is_dir": bool}, ...]
+    """
+    scope = plugins_intent.get("scope", {})
+    if not isinstance(scope, dict):
+        scope = {"fs_roots": [root_path], "allow_network": False}
+
+    ctx = RuntimeContext(
+        run_id=run_id,
+        dry_run=True,
+        strict_dry_run=True,
+        allow_destructive=False,
+        trace_path=trace_path,
+    )
+    plan = {
+        "plan_id": "plan_preflight_walk_001",
+        "intent": {"intent_id": "cli.preflight_walk", "params": {}, "scope": scope, "context": {"source": "cli"}},
+        "steps": [
+            {
+                "step_id": "walk",
+                "title": "Walk root",
+                "phase": "staging",
+                "tool": {
+                    "tool_id": "fs.walk",
+                    "args": {"path": root_path, "include_dirs": bool(include_dirs)},
+                    "dry_run_ok": True,
+                },
+            }
+        ],
+    }
+    out = kernel.run_plan(ctx, plan)
+    walk_res = next((r for r in out.get("results", []) if r.get("step_id") == "walk"), None)
+    if isinstance(walk_res, dict):
+        o = walk_res.get("output", {})
+        if isinstance(o, dict) and isinstance(o.get("entries"), list):
+            entries = []
+            for e in o["entries"]:
+                if isinstance(e, dict) and isinstance(e.get("path"), str):
+                    entries.append(
+                        {"path": e["path"], "is_file": bool(e.get("is_file", False)), "is_dir": bool(e.get("is_dir", False))}
+                    )
+            return entries
+    return []
 
 
 def cmd_dry_run_intent(args: argparse.Namespace) -> int:
@@ -173,9 +388,22 @@ def cmd_dry_run_intent(args: argparse.Namespace) -> int:
     kernel = Kernel(tools)
     if args.scan:
         scan_trace = Path(args.trace).with_suffix(".preflight.jsonl")
-        intent["params"]["entries"] = _preflight_scan_entries(
-            kernel=kernel, plugins_intent=intent, run_id=f"{args.run_id}_preflight", trace_path=scan_trace
-        )
+        if args.intent == "desktop.restore":
+            target_dir = intent.get("params", {}).get("target_dir", "~/Desktop")
+            sorted_root = f"{target_dir}/_Sorted"
+            # Ensure scope includes sorted_root if user explicitly provided roots.
+            intent["params"]["sorted_entries"] = _preflight_walk_entries(
+                kernel=kernel,
+                plugins_intent=intent,
+                root_path=sorted_root,
+                run_id=f"{args.run_id}_preflight",
+                trace_path=scan_trace,
+                include_dirs=bool(getattr(args, "include_dirs", False)),
+            )
+        else:
+            intent["params"]["entries"] = _preflight_scan_entries(
+                kernel=kernel, plugins_intent=intent, run_id=f"{args.run_id}_preflight", trace_path=scan_trace
+            )
     ctx = RuntimeContext(
         run_id=args.run_id,
         dry_run=True,
@@ -199,9 +427,21 @@ def cmd_run_intent(args: argparse.Namespace) -> int:
     kernel = Kernel(tools)
     if args.scan:
         scan_trace = Path(args.trace).with_suffix(".preflight.jsonl")
-        intent["params"]["entries"] = _preflight_scan_entries(
-            kernel=kernel, plugins_intent=intent, run_id=f"{args.run_id}_preflight", trace_path=scan_trace
-        )
+        if args.intent == "desktop.restore":
+            target_dir = intent.get("params", {}).get("target_dir", "~/Desktop")
+            sorted_root = f"{target_dir}/_Sorted"
+            intent["params"]["sorted_entries"] = _preflight_walk_entries(
+                kernel=kernel,
+                plugins_intent=intent,
+                root_path=sorted_root,
+                run_id=f"{args.run_id}_preflight",
+                trace_path=scan_trace,
+                include_dirs=bool(getattr(args, "include_dirs", False)),
+            )
+        else:
+            intent["params"]["entries"] = _preflight_scan_entries(
+                kernel=kernel, plugins_intent=intent, run_id=f"{args.run_id}_preflight", trace_path=scan_trace
+            )
     ctx = RuntimeContext(
         run_id=args.run_id,
         dry_run=False,
@@ -349,7 +589,37 @@ def main(argv=None) -> int:
     p_run_intent.add_argument("--run-id", default="run_cli", help="Run ID for trace correlation")
     p_run_intent.add_argument("--allow-destructive", action="store_true", help="Allow destructive tools (still policy-checked)")
     p_run_intent.add_argument("--scan", action="store_true", help="Preflight scan target_dir via tools and pass entries into planner")
+    p_run_intent.add_argument("--config-path", help="Plugin param: config_path (YAML) for config-driven intents")
     p_run_intent.set_defaults(func=cmd_run_intent)
+
+    p_dry_intent.add_argument("--config-path", help="Plugin param: config_path (YAML) for config-driven intents")
+
+    p_desktop = sub.add_parser("desktop", help="Desktop tidy UX commands (builtin.desktop)")
+    desktop_sub = p_desktop.add_subparsers(dest="desktop_cmd", required=True)
+
+    p_dc = desktop_sub.add_parser("configure", help="Print or write a scaffold desktop rules config")
+    p_dc.add_argument("--root-path", default="~/Desktop", help="Root desktop path")
+    p_dc.add_argument("--staging-dir", help="Staging dir path (default: <root>_Staging)")
+    p_dc.add_argument("--output", help="Write config to file instead of stdout")
+    p_dc.set_defaults(func=cmd_desktop_configure)
+
+    p_dp = desktop_sub.add_parser("preview", help="Dry-run tidy using config_path + deterministic preflight scan")
+    p_dp.add_argument("--config-path", required=True, help="Path to desktop rules YAML")
+    p_dp.add_argument("--trace", default="trace.jsonl", help="Trace output path (jsonl)")
+    p_dp.add_argument("--run-id", default="run_cli", help="Run ID for trace correlation")
+    p_dp.set_defaults(func=cmd_desktop_preview)
+
+    p_dr = desktop_sub.add_parser("run", help="Execute tidy using config_path + deterministic preflight scan")
+    p_dr.add_argument("--config-path", required=True, help="Path to desktop rules YAML")
+    p_dr.add_argument("--trace", default="trace.jsonl", help="Trace output path (jsonl)")
+    p_dr.add_argument("--run-id", default="run_cli", help="Run ID for trace correlation")
+    p_dr.set_defaults(func=cmd_desktop_run)
+
+    p_drs = desktop_sub.add_parser("restore", help="Execute restore using config_path + deterministic preflight walk")
+    p_drs.add_argument("--config-path", required=True, help="Path to desktop rules YAML")
+    p_drs.add_argument("--trace", default="trace.jsonl", help="Trace output path (jsonl)")
+    p_drs.add_argument("--run-id", default="run_cli", help="Run ID for trace correlation")
+    p_drs.set_defaults(func=cmd_desktop_restore)
 
     ns = parser.parse_args(argv)
     return int(ns.func(ns))

@@ -1,0 +1,62 @@
+version: "0.1"
+plugin: "builtin.desktop"
+
+root:
+  path: "~/Desktop"
+  staging_dir: "~/Desktop_Staging"
+
+folders:
+  inbox: "Inbox"
+  screenshots: "Screenshots"
+  documents: "Documents"
+  images: "Images"
+  archives: "Archives"
+  apps: "Apps"
+  misc: "Misc"
+
+rules:
+  - id: "rule_screenshots"
+    match:
+      any:
+        - filename_regex: "^Screen Shot "
+        - filename_regex: "^スクリーンショット"
+        - mime_prefix: "image/"
+      all:
+        - created_within_days: 90
+    action:
+      move_to: "screenshots"
+
+  - id: "rule_docs"
+    match:
+      any:
+        - ext_in: ["pdf", "docx", "xlsx", "pptx", "txt", "md"]
+    action:
+      move_to: "documents"
+
+  - id: "rule_images"
+    match:
+      any:
+        - ext_in: ["png", "jpg", "jpeg", "webp", "gif", "heic"]
+    action:
+      move_to: "images"
+
+  - id: "rule_archives"
+    match:
+      any:
+        - ext_in: ["zip", "7z", "rar", "tar", "gz"]
+    action:
+      move_to: "archives"
+
+defaults:
+  unmatched_action:
+    move_to: "misc"
+
+safety:
+  no_delete: true
+  require_staging: true
+  collision_strategy: "suffix_increment"
+  ignore_patterns:
+    - "*.crdownload"
+    - "*.download"
+    - ".DS_Store"
+

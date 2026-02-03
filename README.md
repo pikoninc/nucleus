@@ -123,6 +123,12 @@ A plugin:
 
 ## Developer quickstart (CLI)
 
+Install dependencies:
+
+```bash
+python -m pip install -r requirements.txt
+```
+
 List tools:
 
 ```bash
@@ -135,16 +141,29 @@ List plugin-provided intents (loads manifests from `plugins/`):
 python -m nucleus.cli.nuc list-intents --json
 ```
 
-Dry-run `desktop.tidy` (reference plugin; safe default):
+Scaffold a desktop tidy config:
 
 ```bash
-python -m nucleus.cli.nuc dry-run-intent --intent desktop.tidy --target-dir . --scope-root . --scan --trace /tmp/trace.jsonl
+python -m nucleus.cli.nuc desktop configure --output /tmp/desktop_rules.yml
 ```
 
-Rule options (all optional):
-- `--include-dirs`: also move directories (default: off)
-- `--exclude PATTERN`: exclude by glob against entry name (repeatable), e.g. `--exclude '*.tmp' --exclude '*.log'`
-- `--overwrite-strategy {error,overwrite,skip}`: when destination exists (default: `error`)
+Preview (dry-run): `config_path` + deterministic preflight scan → Plan → dry-run tools:
+
+```bash
+python -m nucleus.cli.nuc desktop preview --config-path /tmp/desktop_rules.yml --trace /tmp/trace.jsonl
+```
+
+Run (execute): `config_path` + deterministic preflight scan → Plan → execute tools:
+
+```bash
+python -m nucleus.cli.nuc desktop run --config-path /tmp/desktop_rules.yml --trace /tmp/trace.jsonl
+```
+
+Restore (execute): `config_path` + deterministic preflight walk of `staging_dir` → Plan → execute tools:
+
+```bash
+python -m nucleus.cli.nuc desktop restore --config-path /tmp/desktop_rules.yml --trace /tmp/trace.jsonl
+```
 
 Execute a plan JSON directly:
 
@@ -217,9 +236,10 @@ Nucleus ships with a reference plugin:
 **builtin.desktop**
 
 It demonstrates:
-- intent-based execution (`desktop.tidy`)
+- intent-based execution (`desktop.tidy.preview` / `desktop.tidy.run` / `desktop.tidy.restore`)
+- user-owned config files (YAML) validated by schema
 - plan-first behavior
-- staging and rollback
+- staging-based filesystem moves (no deletes)
 - safe filesystem operations
 - notification-based UI
 

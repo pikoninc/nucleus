@@ -49,33 +49,110 @@ class TestNucCli(unittest.TestCase):
         self.assertEqual(rc, 0)
         data = json.loads(buf.getvalue())
         intent_ids = [it["intent_id"] for it in data]
-        self.assertIn("desktop.tidy", intent_ids)
+        self.assertIn("desktop.tidy.run", intent_ids)
 
-    def test_dry_run_intent_outputs_plan_id(self) -> None:
+    def test_desktop_preview_outputs_plan_id(self) -> None:
         with tempfile.TemporaryDirectory() as td:
-            trace_path = Path(td) / "trace.jsonl"
-            buf = io.StringIO()
-            with redirect_stdout(buf):
-                rc = nuc_main(
+            td_path = Path(td)
+            root = td_path / "Desktop"
+            staging = td_path / "Desktop_Staging"
+            root.mkdir(parents=True)
+            (root / "pic.jpg").write_text("x", encoding="utf-8")
+            (root / "a.tmp").write_text("x", encoding="utf-8")
+
+            cfg_path = td_path / "desktop_rules.yml"
+            cfg_path.write_text(
+                "\n".join(
                     [
-                        "dry-run-intent",
-                        "--intent",
-                        "desktop.tidy",
-                        "--target-dir",
-                        td,
-                        "--scope-root",
-                        td,
-                        "--scan",
-                        "--trace",
-                        str(trace_path),
-                        "--run-id",
-                        "run_test_intent_1",
+                        'version: "0.1"',
+                        'plugin: "builtin.desktop"',
+                        "",
+                        "root:",
+                        f'  path: "{root}"',
+                        f'  staging_dir: "{staging}"',
+                        "",
+                        "folders:",
+                        '  images: "Images"',
+                        '  misc: "Misc"',
+                        "",
+                        "rules:",
+                        '  - id: "r_images"',
+                        "    match:",
+                        "      any:",
+                        '        - ext_in: ["jpg"]',
+                        "    action:",
+                        '      move_to: "images"',
+                        "",
+                        "defaults:",
+                        "  unmatched_action:",
+                        '    move_to: "misc"',
+                        "",
+                        "safety:",
+                        '  collision_strategy: "suffix_increment"',
+                        '  ignore_patterns: ["*.tmp"]',
+                        "",
                     ]
                 )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            trace_path = td_path / "trace.jsonl"
+            buf = io.StringIO()
+            with redirect_stdout(buf):
+                rc = nuc_main(["desktop", "preview", "--config-path", str(cfg_path), "--trace", str(trace_path), "--run-id", "run_test_preview_1"])
             self.assertEqual(rc, 0)
             out = json.loads(buf.getvalue())
-            self.assertEqual(out["plan_id"], "plan_desktop_tidy_001")
+            self.assertEqual(out["plan_id"], "plan_desktop_tidy_preview_001")
             self.assertTrue(trace_path.exists())
+
+    def test_desktop_restore_moves_file_back(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            td_path = Path(td)
+            root = td_path / "Desktop"
+            staging = td_path / "Desktop_Staging"
+            root.mkdir(parents=True)
+            (staging / "Images").mkdir(parents=True)
+            (staging / "Images" / "pic.jpg").write_text("x", encoding="utf-8")
+
+            cfg_path = td_path / "desktop_rules.yml"
+            cfg_path.write_text(
+                "\n".join(
+                    [
+                        'version: "0.1"',
+                        'plugin: "builtin.desktop"',
+                        "",
+                        "root:",
+                        f'  path: "{root}"',
+                        f'  staging_dir: "{staging}"',
+                        "",
+                        "folders:",
+                        '  images: "Images"',
+                        "",
+                        "rules: []",
+                        "",
+                        "defaults:",
+                        "  unmatched_action:",
+                        '    move_to: "images"',
+                        "",
+                        "safety:",
+                        '  collision_strategy: "suffix_increment"',
+                        "",
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            trace_path = td_path / "trace.jsonl"
+            buf = io.StringIO()
+            with redirect_stdout(buf):
+                rc = nuc_main(["desktop", "restore", "--config-path", str(cfg_path), "--trace", str(trace_path), "--run-id", "run_test_restore_1"])
+            self.assertEqual(rc, 0)
+            out = json.loads(buf.getvalue())
+            self.assertEqual(out["plan_id"], "plan_desktop_tidy_restore_001")
+            self.assertTrue((root / "pic.jpg").exists())
+            self.assertFalse((staging / "Images" / "pic.jpg").exists())
 
 
 if __name__ == "__main__":

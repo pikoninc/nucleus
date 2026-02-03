@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sys
 from typing import Any, Dict
 
 
@@ -19,7 +20,7 @@ def run(args: Dict[str, Any], dry_run: bool) -> Dict[str, Any]:
             "expected_effects": [{"kind": "notify", "summary": f"Notify: {message}", "resources": []}],
         }
 
-    # Deterministic side-effect: write to stdout.
-    print(message)
+    # Deterministic side-effect: write to stderr (keeps JSON stdout stable for CLIs).
+    print(message, file=sys.stderr)
     return {"dry_run": False, "sent": True}
 

@@ -28,6 +28,11 @@ dist/
 .vscode/
 .idea/
 
+# Environment files (secrets)
+.env
+.env.*
+!.env.example
+
 # Nucleus outputs (trace/audit)
 *.jsonl
 trace.jsonl

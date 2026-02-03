@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
+from urllib.parse import urlparse
 
 from .errors import PolicyDenied, ValidationError
 from .runtime_context import RuntimeContext
@@ -45,6 +46,17 @@ class PolicyEngine:
         if len(roots) < 1:
             return PolicyResult(decision="deny", reason_codes=["scope.invalid"], summary="Scope fs_roots must be valid paths")
 
+        allow_network = bool(scope.get("allow_network", False))
+        network_hosts_allowlist = scope.get("network_hosts_allowlist", [])
+        if network_hosts_allowlist is None:
+            network_hosts_allowlist = []
+        if not isinstance(network_hosts_allowlist, list) or any((not isinstance(x, str) or not x) for x in network_hosts_allowlist):
+            return PolicyResult(
+                decision="deny",
+                reason_codes=["scope.invalid"],
+                summary="Scope network_hosts_allowlist must be an array of non-empty strings when provided",
+            )
+
         steps = plan.get("steps")
         if not isinstance(steps, list) or len(steps) < 1:
             return PolicyResult(decision="deny", reason_codes=["plan.steps_missing"], summary="Plan must have steps")
@@ -62,6 +74,58 @@ class PolicyEngine:
             tool_def = self._tools.get(tool_id)
             if tool_def is None:
                 return PolicyResult(decision="deny", reason_codes=["tool.unknown"], summary=f"Unknown tool: {tool_id}")
+
+            # Network safety: deny-by-default unless scope explicitly allows network.
+            if tool_def.get("side_effects") == "network":
+                if not allow_network:
+                    return PolicyResult(
+                        decision="deny",
+                        reason_codes=["scope.network_denied"],
+                        summary=f"Network tool is denied by scope.allow_network=false: {tool_id}",
+                    )
+
+                # Host allowlist is mandatory when network is enabled.
+                if not network_hosts_allowlist:
+                    return PolicyResult(
+                        decision="deny",
+                        reason_codes=["scope.network_allowlist_missing"],
+                        summary="Network is enabled but scope.network_hosts_allowlist is empty",
+                    )
+
+                args_obj = tool_call.get("args", {})
+                if not isinstance(args_obj, dict):
+                    return PolicyResult(decision="deny", reason_codes=["plan.args_invalid"], summary="Step.tool.args must be an object")
+                url = args_obj.get("url") or args_obj.get("endpoint")
+                if not isinstance(url, str) or not url:
+                    return PolicyResult(
+                        decision="deny",
+                        reason_codes=["scope.network_missing_url"],
+                        summary=f"Network tool requires args.url or args.endpoint to enforce allowlist: {tool_id}",
+                    )
+                host = urlparse(url).hostname
+                if not host:
+                    return PolicyResult(
+                        decision="deny",
+                        reason_codes=["scope.network_invalid_url"],
+                        summary=f"Invalid URL for network tool allowlist enforcement: {tool_id}",
+                    )
+                ok = False
+                for pat in network_hosts_allowlist:
+                    if pat == "*":
+                        ok = True
+                        break
+                    if pat.startswith("*.") and host.endswith(pat[1:]):
+                        ok = True
+                        break
+                    if host == pat:
+                        ok = True
+                        break
+                if not ok:
+                    return PolicyResult(
+                        decision="deny",
+                        reason_codes=["scope.network_host_denied"],
+                        summary=f"Network host is not in allowlist: {host}",
+                    )
 
             # Scope enforcement for filesystem tools: tool args must be within declared fs_roots.
             if isinstance(tool_id, str) and tool_id.startswith("fs."):

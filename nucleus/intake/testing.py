@@ -35,3 +35,23 @@ class FirstAllowedIntentProvider:
         intent_id = intent_ids[0] if intent_ids else "unknown.intent"
         return {"intent_id": intent_id, "params": {}, "scope": {"fs_roots": ["."], "allow_network": False}, "context": {}}
 
+
+class ModelAsIntentProvider:
+    """
+    Deterministic provider for tests/examples.
+
+    It returns an Intent whose intent_id is exactly the provided model string.
+    This lets tests select a specific intent without adding extra constructor kwargs.
+    """
+
+    def __init__(self, model: str = "stub", **_kwargs: Any) -> None:
+        self._model = model
+
+    @property
+    def model(self) -> str:
+        return self._model
+
+    def triage(self, *, input_text: str, system_prompt: str, intent_schema: Dict[str, Any]) -> Dict[str, Any]:
+        _ = (input_text, system_prompt, intent_schema)
+        return {"intent_id": self._model, "params": {}, "scope": {"fs_roots": ["."], "allow_network": False}, "context": {}}
+

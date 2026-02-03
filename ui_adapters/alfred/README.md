@@ -1,10 +1,15 @@
-# Alfred Input Adapter (CLI bridge)
+# Alfred UI Adapter (CLI bridge)
 
-This repository's Alfred input adapter is implemented as a **CLI bridge**:
+This repository's Alfred adapter is implemented as a **CLI bridge**:
 
 - Alfred passes its `{query}` string to `nuc alfred --query ...`
 - The command prints a **contract-shaped `Intent` JSON** to stdout
 - Execution is still performed by running the Intent through the kernel (plan-first)
+
+## Output behavior
+Alfred itself is the UI, but this bridge is intentionally minimal:
+- **stdout**: emitted `Intent` JSON (for piping/interop)
+- **default renderer**: terminal stdout/stderr when the next layer executes the intent/plan
 
 ## Query grammar (minimal)
 

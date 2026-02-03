@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import shlex
 import shutil
+import sys
 from pathlib import Path
 from typing import Any, Dict, List
 
@@ -27,6 +29,7 @@ def _load_json(path: Path):
 
 
 _APP_ID_RE = re.compile(r"^[a-z][a-z0-9_-]{1,63}$")
+_ENV_KEY_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 
 def _validate_app_id(app_id: str) -> str:
@@ -65,6 +68,104 @@ def _write_text(path: Path, content: str) -> None:
     path.write_text(content, encoding="utf-8")
 
 
+def _default_desktop_config_path() -> Path:
+    """
+    Default per-user config location.
+
+    - If XDG_CONFIG_HOME is set, use it.
+    - Else use ~/.config
+    """
+    base = os.environ.get("XDG_CONFIG_HOME")
+    if isinstance(base, str) and base.strip():
+        return Path(base).expanduser() / "nucleus" / "desktop_rules.yml"
+    return Path("~/.config").expanduser() / "nucleus" / "desktop_rules.yml"
+
+
+def _render_desktop_rules_yaml(*, root_path: str, staging_dir: str) -> str:
+    # Keep this in sync with the plugin's schema and common expectations.
+    # - screenshots: filename regex
+    # - images: generic image mime prefix
+    return (
+        "version: \"0.1\"\n"
+        "plugin: \"builtin.desktop\"\n\n"
+        "root:\n"
+        f"  path: \"{root_path}\"\n"
+        f"  staging_dir: \"{staging_dir}\"\n\n"
+        "folders:\n"
+        "  screenshots: \"Screenshots\"\n"
+        "  images: \"Images\"\n"
+        "  documents: \"Documents\"\n"
+        "  archives: \"Archives\"\n"
+        "  misc: \"Misc\"\n\n"
+        "rules:\n"
+        "  - id: \"rule_screenshots\"\n"
+        "    match:\n"
+        "      any:\n"
+        "        - filename_regex: \"^Screen Shot \"\n"
+        "    action:\n"
+        "      move_to: \"screenshots\"\n\n"
+        "  - id: \"rule_images\"\n"
+        "    match:\n"
+        "      any:\n"
+        "        - mime_prefix: \"image/\"\n"
+        "    action:\n"
+        "      move_to: \"images\"\n\n"
+        "  - id: \"rule_docs\"\n"
+        "    match:\n"
+        "      any:\n"
+        "        - ext_in: [\"pdf\", \"docx\", \"xlsx\", \"pptx\", \"txt\", \"md\"]\n"
+        "    action:\n"
+        "      move_to: \"documents\"\n\n"
+        "defaults:\n"
+        "  unmatched_action:\n"
+        "    move_to: \"misc\"\n\n"
+        "safety:\n"
+        "  no_delete: true\n"
+        "  require_staging: true\n"
+        "  collision_strategy: \"suffix_increment\"\n"
+        "  ignore_patterns: [\".DS_Store\"]\n"
+    )
+
+
+def _ensure_desktop_config_via_stdio(*, config_path: Path) -> Path | None:
+    """
+    If config_path exists, return it. Otherwise, offer an interactive wizard to create it.
+    Returns None if user declines.
+    """
+    p = config_path.expanduser()
+    if p.exists():
+        return p
+
+    def _prompt_stderr(text: str, *, default: str | None = None) -> str:
+        suffix = f" [{default}]" if default else ""
+        print(f"{text}{suffix}: ", end="", file=sys.stderr, flush=True)
+        v = input("").strip()
+        if not v and default is not None:
+            return default
+        return v
+
+    def _confirm_bool_stderr(text: str, *, default: bool = False) -> bool:
+        d = "Y/n" if default else "y/N"
+        print(f"{text} ({d}): ", end="", file=sys.stderr, flush=True)
+        v = input("").strip().lower()
+        if not v:
+            return bool(default)
+        return v in ("y", "yes")
+
+    print(f"Desktop rules config not found: {p}", file=sys.stderr)
+    if not _confirm_bool_stderr("Create it now?", default=True):
+        print("Cancelled.", file=sys.stderr)
+        return None
+
+    root_path = _prompt_stderr("Desktop root path", default="~/Desktop")
+    staging_default = f"{root_path}_Staging"
+    staging_dir = _prompt_stderr("Staging dir path", default=staging_default)
+    content = _render_desktop_rules_yaml(root_path=str(root_path), staging_dir=str(staging_dir))
+    _write_text(p, content)
+    print(f"OK: wrote config to {p}", file=sys.stderr)
+    return p
+
+
 def _render_app_pyproject(*, app_id: str, app_name: str) -> str:
     return "\n".join(
         [
@@ -87,6 +188,52 @@ def _render_app_pyproject(*, app_id: str, app_name: str) -> str:
             "",
         ]
     ) + "\n"
+
+
+def _load_dotenv_from_file(path: Path) -> None:
+    """
+    Minimal dotenv loader (no dependencies).
+
+    - Supports lines like KEY=VALUE (optionally prefixed with 'export ')
+    - Ignores empty lines and comments (# ...)
+    - Strips single/double quotes around values
+    - Does not override already-present environment variables
+    """
+    p = path
+    if not p.exists() or not p.is_file():
+        return
+    try:
+        txt = p.read_text(encoding="utf-8", errors="replace")
+    except Exception:  # noqa: BLE001
+        return
+    for raw_line in txt.splitlines():
+        s = raw_line.strip()
+        if not s or s.startswith("#"):
+            continue
+        if s.startswith("export "):
+            s = s[len("export ") :].lstrip()
+        if "=" not in s:
+            continue
+        k, v = s.split("=", 1)
+        k = k.strip()
+        v = v.strip()
+        if not k or not _ENV_KEY_RE.match(k):
+            continue
+        if k in os.environ:
+            continue
+        if len(v) >= 2 and ((v[0] == v[-1] == '"') or (v[0] == v[-1] == "'")):
+            v = v[1:-1]
+        os.environ[k] = v
+
+
+def _maybe_load_dotenv() -> None:
+    # Default to current working directory.
+    cwd = Path.cwd()
+    # Common patterns:
+    # - `.env` (most tools)
+    # - `env` (repo-safe sample can be copied/renamed)
+    for name in (".env", "env"):
+        _load_dotenv_from_file(cwd / name)
 
 
 def _scaffold_app_dir(*, project_dir: Path, app_id: str, app_name: str) -> None:
@@ -583,41 +730,7 @@ def _preflight_scan_entries(*, kernel: Kernel, plugins_intent: dict, run_id: str
 def cmd_desktop_configure(args: argparse.Namespace) -> int:
     root_path = args.root_path or "~/Desktop"
     staging_dir = args.staging_dir or f"{root_path}_Staging"
-    out = (
-        "version: \"0.1\"\n"
-        "plugin: \"builtin.desktop\"\n\n"
-        "root:\n"
-        f"  path: \"{root_path}\"\n"
-        f"  staging_dir: \"{staging_dir}\"\n\n"
-        "folders:\n"
-        "  screenshots: \"Screenshots\"\n"
-        "  documents: \"Documents\"\n"
-        "  images: \"Images\"\n"
-        "  archives: \"Archives\"\n"
-        "  misc: \"Misc\"\n\n"
-        "rules:\n"
-        "  - id: \"rule_screenshots\"\n"
-        "    match:\n"
-        "      any:\n"
-        "        - filename_regex: \"^Screen Shot \"\n"
-        "        - mime_prefix: \"image/\"\n"
-        "    action:\n"
-        "      move_to: \"screenshots\"\n\n"
-        "  - id: \"rule_docs\"\n"
-        "    match:\n"
-        "      any:\n"
-        "        - ext_in: [\"pdf\", \"docx\", \"xlsx\", \"pptx\", \"txt\", \"md\"]\n"
-        "    action:\n"
-        "      move_to: \"documents\"\n\n"
-        "defaults:\n"
-        "  unmatched_action:\n"
-        "    move_to: \"misc\"\n\n"
-        "safety:\n"
-        "  no_delete: true\n"
-        "  require_staging: true\n"
-        "  collision_strategy: \"suffix_increment\"\n"
-        "  ignore_patterns: [\".DS_Store\"]\n"
-    )
+    out = _render_desktop_rules_yaml(root_path=str(root_path), staging_dir=str(staging_dir))
     if args.output:
         Path(args.output).expanduser().write_text(out, encoding="utf-8")
     else:
@@ -672,9 +785,13 @@ def _run_desktop_intent_with_scan(*, intent_id: str, config_path: str, run_id: s
 
 
 def cmd_desktop_preview(args: argparse.Namespace) -> int:
+    cfg = Path(args.config_path).expanduser() if args.config_path else _default_desktop_config_path()
+    cfg2 = _ensure_desktop_config_via_stdio(config_path=cfg)
+    if cfg2 is None:
+        return 2
     return _run_desktop_intent_with_scan(
         intent_id="desktop.tidy.preview",
-        config_path=args.config_path,
+        config_path=str(cfg2),
         run_id=args.run_id,
         trace=args.trace,
         execute=False,
@@ -682,9 +799,13 @@ def cmd_desktop_preview(args: argparse.Namespace) -> int:
 
 
 def cmd_desktop_run(args: argparse.Namespace) -> int:
+    cfg = Path(args.config_path).expanduser() if args.config_path else _default_desktop_config_path()
+    cfg2 = _ensure_desktop_config_via_stdio(config_path=cfg)
+    if cfg2 is None:
+        return 2
     return _run_desktop_intent_with_scan(
         intent_id="desktop.tidy.run",
-        config_path=args.config_path,
+        config_path=str(cfg2),
         run_id=args.run_id,
         trace=args.trace,
         execute=True,
@@ -692,13 +813,127 @@ def cmd_desktop_run(args: argparse.Namespace) -> int:
 
 
 def cmd_desktop_restore(args: argparse.Namespace) -> int:
+    cfg = Path(args.config_path).expanduser() if args.config_path else _default_desktop_config_path()
+    cfg2 = _ensure_desktop_config_via_stdio(config_path=cfg)
+    if cfg2 is None:
+        return 2
     return _run_desktop_intent_with_scan(
         intent_id="desktop.tidy.restore",
-        config_path=args.config_path,
+        config_path=str(cfg2),
         run_id=args.run_id,
         trace=args.trace,
         execute=True,
     )
+
+
+def cmd_desktop_ai(args: argparse.Namespace) -> int:
+    """
+    Natural-language desktop tidy via intake (OpenAI or other provider), then execute deterministically.
+
+    Flow:
+    - ensure config exists (stdio wizard on first run)
+    - set strict scope roots from config
+    - intake triage to select an intent_id
+    - execute preview/run/restore deterministically with preflight scans
+    """
+    if not bool(getattr(args, "allow_network_intake", False)):
+        print("intake.network_denied: pass --allow-network-intake to enable LLM triage")
+        return 2
+
+    text = args.text
+    if text is None:
+        try:
+            import sys
+
+            text = sys.stdin.read()
+        except Exception:  # noqa: BLE001
+            text = ""
+    if not isinstance(text, str) or not text.strip():
+        print("intake.invalid: missing input text (use --text or pipe stdin)")
+        return 2
+
+    cfg = Path(args.config_path).expanduser() if args.config_path else _default_desktop_config_path()
+    cfg2 = _ensure_desktop_config_via_stdio(config_path=cfg)
+    if cfg2 is None:
+        return 2
+
+    # Use config to define scope (intake must not invent roots).
+    root_path, staging_dir = _load_desktop_rules_paths(str(cfg2))
+    scope = {"fs_roots": [root_path, staging_dir], "allow_network": False}
+
+    plugins_dir = Path(args.plugins_dir) if args.plugins_dir else _default_plugins_dir()
+    reg = _load_plugins(plugins_dir)
+    intents = reg.list_intents()
+    # Constrain to desktop intents for safety/clarity.
+    intents = [it for it in intents if isinstance(it, dict) and str(it.get("intent_id", "")).startswith("desktop.")]
+
+    try:
+        from nucleus.intake.provider_loading import load_triage_provider
+        from nucleus.intake.triage import triage_text_to_intent
+
+        api_base = args.api_base
+        if api_base is None:
+            env_base = os.environ.get("OPENAI_API_BASE")
+            if isinstance(env_base, str) and env_base.strip():
+                api_base = env_base.strip()
+
+        loaded = load_triage_provider(
+            provider=args.provider,
+            model=args.model,
+            api_base=api_base,
+            api_key_env=args.api_key_env,
+        )
+        res = triage_text_to_intent(
+            input_text=str(text),
+            intents_catalog=intents,
+            scope=scope,
+            context={"source": "cli.desktop.ai"},
+            provider=loaded.provider,
+            provider_id=loaded.provider_id,
+            model=loaded.model,
+            allow_network=True,
+        )
+    except Exception as e:  # noqa: BLE001
+        print(str(e))
+        return 1
+
+    intent = res.intent
+    iid = intent.get("intent_id")
+    if iid in ("desktop.tidy.preview", "desktop.tidy.run", "desktop.tidy.restore"):
+        params = intent.get("params", {}) if isinstance(intent.get("params"), dict) else {}
+        if not isinstance(params.get("config_path"), str) or not params.get("config_path"):
+            params["config_path"] = str(cfg2)
+        intent["params"] = params
+
+    # Execute based on chosen intent.
+    if iid == "desktop.tidy.preview":
+        return _run_desktop_intent_with_scan(
+            intent_id="desktop.tidy.preview",
+            config_path=str(cfg2),
+            run_id=args.run_id,
+            trace=args.trace,
+            execute=False,
+        )
+    if iid == "desktop.tidy.run":
+        return _run_desktop_intent_with_scan(
+            intent_id="desktop.tidy.run",
+            config_path=str(cfg2),
+            run_id=args.run_id,
+            trace=args.trace,
+            execute=True,
+        )
+    if iid == "desktop.tidy.restore":
+        return _run_desktop_intent_with_scan(
+            intent_id="desktop.tidy.restore",
+            config_path=str(cfg2),
+            run_id=args.run_id,
+            trace=args.trace,
+            execute=True,
+        )
+
+    # Fallback: just print the selected intent for unsupported desktop intents.
+    print(json.dumps(intent, ensure_ascii=False, indent=2))
+    return 0
 
 
 def _preflight_walk_entries(
@@ -917,10 +1152,16 @@ def cmd_intake(args: argparse.Namespace) -> int:
         from nucleus.intake.provider_loading import load_triage_provider
         from nucleus.intake.triage import triage_text_to_intent
 
+        api_base = args.api_base
+        if api_base is None:
+            env_base = os.environ.get("OPENAI_API_BASE")
+            if isinstance(env_base, str) and env_base.strip():
+                api_base = env_base.strip()
+
         loaded = load_triage_provider(
             provider=args.provider,
             model=args.model,
-            api_base=args.api_base,
+            api_base=api_base,
             api_key_env=args.api_key_env,
         )
         res = triage_text_to_intent(
@@ -1035,6 +1276,7 @@ def cmd_alfred(args: argparse.Namespace) -> int:
 
 
 def main(argv=None) -> int:
+    _maybe_load_dotenv()
     parser = argparse.ArgumentParser(prog="nuc", description="Nucleus CLI (framework)")
     sub = parser.add_subparsers(dest="cmd", required=True)
 
@@ -1166,22 +1408,35 @@ def main(argv=None) -> int:
     p_dc.set_defaults(func=cmd_desktop_configure)
 
     p_dp = desktop_sub.add_parser("preview", help="Dry-run tidy using config_path + deterministic preflight scan")
-    p_dp.add_argument("--config-path", required=True, help="Path to desktop rules YAML")
+    p_dp.add_argument("--config-path", help="Path to desktop rules YAML (default: XDG config)")
     p_dp.add_argument("--trace", default="trace.jsonl", help="Trace output path (jsonl)")
     p_dp.add_argument("--run-id", default="run_cli", help="Run ID for trace correlation")
     p_dp.set_defaults(func=cmd_desktop_preview)
 
     p_dr = desktop_sub.add_parser("run", help="Execute tidy using config_path + deterministic preflight scan")
-    p_dr.add_argument("--config-path", required=True, help="Path to desktop rules YAML")
+    p_dr.add_argument("--config-path", help="Path to desktop rules YAML (default: XDG config)")
     p_dr.add_argument("--trace", default="trace.jsonl", help="Trace output path (jsonl)")
     p_dr.add_argument("--run-id", default="run_cli", help="Run ID for trace correlation")
     p_dr.set_defaults(func=cmd_desktop_run)
 
     p_drs = desktop_sub.add_parser("restore", help="Execute restore using config_path + deterministic preflight walk")
-    p_drs.add_argument("--config-path", required=True, help="Path to desktop rules YAML")
+    p_drs.add_argument("--config-path", help="Path to desktop rules YAML (default: XDG config)")
     p_drs.add_argument("--trace", default="trace.jsonl", help="Trace output path (jsonl)")
     p_drs.add_argument("--run-id", default="run_cli", help="Run ID for trace correlation")
     p_drs.set_defaults(func=cmd_desktop_restore)
+
+    p_dai = desktop_sub.add_parser("ai", help="Desktop tidy via intake (natural language -> intent -> deterministic execution)")
+    p_dai.add_argument("--text", help="Natural language input. If omitted, read from stdin.")
+    p_dai.add_argument("--config-path", help="Desktop rules config path (default: XDG config)")
+    p_dai.add_argument("--plugins-dir", default=str(_default_plugins_dir()), help="Plugins directory (for intent catalog)")
+    p_dai.add_argument("--provider", default="openai.responses", help="Provider ID or 'module:object' spec")
+    p_dai.add_argument("--model", default="gpt-4o-mini", help="Model name (provider-specific)")
+    p_dai.add_argument("--api-base", help="Provider API base URL (when supported)")
+    p_dai.add_argument("--api-key-env", default="OPENAI_API_KEY", help="API key env var name (when supported)")
+    p_dai.add_argument("--allow-network-intake", action="store_true", help="Enable OpenAI API call for intake triage")
+    p_dai.add_argument("--trace", default="trace.jsonl", help="Trace output path (jsonl)")
+    p_dai.add_argument("--run-id", default="run_cli", help="Run ID for trace correlation")
+    p_dai.set_defaults(func=cmd_desktop_ai)
 
     ns = parser.parse_args(argv)
     return int(ns.func(ns))

@@ -87,6 +87,40 @@ def load_triage_provider(
         client = OpenAIResponsesClient(config=cfg)
         return LoadedProvider(provider=OpenAIResponsesTriageProvider(client=client, model=model), provider_id="openai.responses", model=model)
 
+    if provider in ("anthropic.messages", "anthropic"):
+        from .anthropic_messages import AnthropicMessagesClient, AnthropicMessagesConfig
+        from .providers import AnthropicMessagesTriageProvider
+
+        cfg = AnthropicMessagesConfig()
+        if api_base:
+            cfg = AnthropicMessagesConfig(
+                api_base=api_base,
+                api_key_env=cfg.api_key_env,
+                timeout_s=cfg.timeout_s,
+                anthropic_version=cfg.anthropic_version,
+            )
+        if api_key_env:
+            cfg = AnthropicMessagesConfig(
+                api_base=cfg.api_base,
+                api_key_env=api_key_env,
+                timeout_s=cfg.timeout_s,
+                anthropic_version=cfg.anthropic_version,
+            )
+        client = AnthropicMessagesClient(config=cfg)
+        return LoadedProvider(provider=AnthropicMessagesTriageProvider(client=client, model=model), provider_id="anthropic.messages", model=model)
+
+    if provider in ("google.gemini", "gemini", "google"):
+        from .google_gemini import GoogleGeminiClient, GoogleGeminiConfig
+        from .providers import GoogleGeminiTriageProvider
+
+        cfg = GoogleGeminiConfig()
+        if api_base:
+            cfg = GoogleGeminiConfig(api_base=api_base, api_key_env=cfg.api_key_env, timeout_s=cfg.timeout_s)
+        if api_key_env:
+            cfg = GoogleGeminiConfig(api_base=cfg.api_base, api_key_env=api_key_env, timeout_s=cfg.timeout_s)
+        client = GoogleGeminiClient(config=cfg)
+        return LoadedProvider(provider=GoogleGeminiTriageProvider(client=client, model=model), provider_id="google.gemini", model=model)
+
     # Dynamic provider: "module:Class" or "module:factory"
     obj = _import_object(provider)
     kwargs: Dict[str, Any] = {"model": model, "api_base": api_base, "api_key_env": api_key_env}

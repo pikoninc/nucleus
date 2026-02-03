@@ -10,6 +10,7 @@ from tools.fs.mkdir import run as fs_mkdir
 from tools.fs.move import run as fs_move
 from tools.fs.stat import run as fs_stat
 from tools.fs.walk import run as fs_walk
+from tools.net.http import run as net_http
 from tools.notify.send import run as notify_send
 
 
@@ -102,6 +103,26 @@ def build_tool_registry() -> ToolRegistry:
             "required": ["from", "to"],
         },
         fs_move,
+    )
+    reg_tool(
+        "net.http",
+        "HTTP request",
+        "network",
+        True,
+        {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "method": {"type": "string"},
+                "url": {"type": "string", "minLength": 1},
+                "headers": {"type": "object", "additionalProperties": {"type": "string"}},
+                "json": {},
+                "body": {"type": "string"},
+                "timeout_s": {"type": "number", "minimum": 0},
+            },
+            "required": ["url"],
+        },
+        net_http,
     )
     reg_tool(
         "notify.send",

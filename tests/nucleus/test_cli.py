@@ -1,9 +1,11 @@
 import io
 import json
+import os
 import tempfile
 import unittest
 from contextlib import redirect_stdout
 from pathlib import Path
+from unittest.mock import patch
 
 from nucleus.cli.nuc import main as nuc_main
 
@@ -51,6 +53,29 @@ class TestNucCli(unittest.TestCase):
         intent_ids = [it["intent_id"] for it in data]
         self.assertIn("desktop.tidy", intent_ids)
         self.assertIn("desktop.tidy.run", intent_ids)
+
+    def test_cli_loads_env_file_from_cwd(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            td_path = Path(td)
+            (td_path / "env").write_text('OPENAI_API_KEY="test_key_from_env_file"\n', encoding="utf-8")
+
+            old_cwd = os.getcwd()
+            old_key = os.environ.get("OPENAI_API_KEY")
+            try:
+                if "OPENAI_API_KEY" in os.environ:
+                    os.environ.pop("OPENAI_API_KEY", None)
+                os.chdir(td)
+                buf = io.StringIO()
+                with redirect_stdout(buf):
+                    rc = nuc_main(["list-tools", "--json"])
+                self.assertEqual(rc, 0)
+                self.assertEqual(os.environ.get("OPENAI_API_KEY"), "test_key_from_env_file")
+            finally:
+                os.chdir(old_cwd)
+                if old_key is None:
+                    os.environ.pop("OPENAI_API_KEY", None)
+                else:
+                    os.environ["OPENAI_API_KEY"] = old_key
 
     def test_desktop_preview_outputs_plan_id(self) -> None:
         with tempfile.TemporaryDirectory() as td:
@@ -107,6 +132,74 @@ class TestNucCli(unittest.TestCase):
             self.assertEqual(out["plan_id"], "plan_desktop_tidy_preview_001")
             self.assertTrue(trace_path.exists())
 
+    def test_desktop_run_moves_files_into_staging(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            td_path = Path(td)
+            root = td_path / "Desktop"
+            staging = td_path / "Desktop_Staging"
+            root.mkdir(parents=True)
+            (root / "pic.jpg").write_text("x", encoding="utf-8")
+            (root / "doc.pdf").write_text("x", encoding="utf-8")
+            (root / "a.tmp").write_text("x", encoding="utf-8")
+
+            cfg_path = td_path / "desktop_rules.yml"
+            cfg_path.write_text(
+                "\n".join(
+                    [
+                        'version: "0.1"',
+                        'plugin: "builtin.desktop"',
+                        "",
+                        "root:",
+                        f'  path: "{root}"',
+                        f'  staging_dir: "{staging}"',
+                        "",
+                        "folders:",
+                        '  images: "Images"',
+                        '  documents: "Documents"',
+                        '  misc: "Misc"',
+                        "",
+                        "rules:",
+                        '  - id: "r_images"',
+                        "    match:",
+                        "      any:",
+                        '        - ext_in: ["jpg"]',
+                        "    action:",
+                        '      move_to: "images"',
+                        '  - id: "r_docs"',
+                        "    match:",
+                        "      any:",
+                        '        - ext_in: ["pdf"]',
+                        "    action:",
+                        '      move_to: "documents"',
+                        "",
+                        "defaults:",
+                        "  unmatched_action:",
+                        '    move_to: "misc"',
+                        "",
+                        "safety:",
+                        '  collision_strategy: "suffix_increment"',
+                        '  ignore_patterns: ["*.tmp"]',
+                        "",
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            trace_path = td_path / "trace.jsonl"
+            buf = io.StringIO()
+            with redirect_stdout(buf):
+                rc = nuc_main(["desktop", "run", "--config-path", str(cfg_path), "--trace", str(trace_path), "--run-id", "run_test_run_1"])
+            self.assertEqual(rc, 0)
+            out = json.loads(buf.getvalue())
+            self.assertEqual(out["plan_id"], "plan_desktop_tidy_run_001")
+            self.assertTrue((staging / "Images" / "pic.jpg").exists())
+            self.assertTrue((staging / "Documents" / "doc.pdf").exists())
+            self.assertFalse((root / "pic.jpg").exists())
+            self.assertFalse((root / "doc.pdf").exists())
+            # ignored
+            self.assertTrue((root / "a.tmp").exists())
+
     def test_desktop_restore_moves_file_back(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             td_path = Path(td)
@@ -154,6 +247,61 @@ class TestNucCli(unittest.TestCase):
             self.assertEqual(out["plan_id"], "plan_desktop_tidy_restore_001")
             self.assertTrue((root / "pic.jpg").exists())
             self.assertFalse((staging / "Images" / "pic.jpg").exists())
+
+    def test_desktop_ai_first_run_creates_config_and_runs(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            td_path = Path(td)
+            root = td_path / "Desktop"
+            root.mkdir(parents=True)
+            (root / "pic.jpg").write_text("x", encoding="utf-8")
+
+            xdg = td_path / "xdg"
+            trace_path = td_path / "trace.jsonl"
+
+            # First run: config doesn't exist -> wizard prompts and writes it, then runs tidy.run chosen by stub provider.
+            inputs = iter(
+                [
+                    "y",  # create config
+                    str(root),  # root path
+                    "",  # staging dir default (<root>_Staging)
+                ]
+            )
+
+            buf = io.StringIO()
+            with (
+                patch.dict("os.environ", {"XDG_CONFIG_HOME": str(xdg)}, clear=False),
+                patch("builtins.input", side_effect=lambda _prompt: next(inputs)),
+                redirect_stdout(buf),
+            ):
+                rc = nuc_main(
+                    [
+                        "desktop",
+                        "ai",
+                        "--text",
+                        "デスクトップを実行で整理して",
+                        "--allow-network-intake",
+                        "--provider",
+                        "nucleus.intake.testing:ModelAsIntentProvider",
+                        "--model",
+                        "desktop.tidy.run",
+                        "--trace",
+                        str(trace_path),
+                        "--run-id",
+                        "run_test_ai_1",
+                    ]
+                )
+            self.assertEqual(rc, 0)
+            out = json.loads(buf.getvalue())
+            self.assertEqual(out["plan_id"], "plan_desktop_tidy_run_001")
+
+            # Config created at XDG default path.
+            cfg_path = xdg / "nucleus" / "desktop_rules.yml"
+            self.assertTrue(cfg_path.exists())
+
+            # File moved into staging.
+            staging = td_path / "Desktop_Staging"
+            self.assertTrue((staging / "Images" / "pic.jpg").exists())
+            self.assertFalse((root / "pic.jpg").exists())
 
     def test_alfred_emits_intent_from_query(self) -> None:
         with tempfile.TemporaryDirectory() as td:

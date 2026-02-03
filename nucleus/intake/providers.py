@@ -5,6 +5,9 @@ from typing import Any, Dict, Optional
 from nucleus.core.errors import ValidationError
 
 from .openai_responses import OpenAIResponsesClient
+from .anthropic_messages import AnthropicMessagesClient
+from .google_gemini import GoogleGeminiClient
+from ._json_extract import extract_first_json_object
 
 
 class OpenAIResponsesTriageProvider:
@@ -68,4 +71,85 @@ class OpenAIResponsesTriageProvider:
             return resp["output_parsed"]
 
         raise ValidationError(code="intake.invalid_response", message="Could not extract structured intent from OpenAI response", data={"keys": list(resp.keys())})
+
+
+class AnthropicMessagesTriageProvider:
+    """
+    Triage provider using Anthropic Messages API.
+
+    This uses best-effort JSON extraction from returned text content.
+    """
+
+    def __init__(self, *, client: AnthropicMessagesClient, model: str, api_key: Optional[str] = None) -> None:
+        self._client = client
+        self._model = model
+        self._api_key = api_key
+
+    @property
+    def model(self) -> str:
+        return self._model
+
+    def triage(self, *, input_text: str, system_prompt: str, intent_schema: Dict[str, Any]) -> Dict[str, Any]:
+        _ = intent_schema  # schema is enforced after triage by core contract validation
+        resp = self._client.create_message(model=self._model, input_text=input_text, system_prompt=system_prompt, api_key=self._api_key)
+        if not isinstance(resp, dict):
+            raise ValidationError(code="intake.invalid_response", message="Anthropic response must be an object")
+
+        content = resp.get("content")
+        if isinstance(content, list):
+            for c in content:
+                if not isinstance(c, dict):
+                    continue
+                txt = c.get("text")
+                if isinstance(txt, str):
+                    obj = extract_first_json_object(txt)
+                    if isinstance(obj, dict):
+                        return obj
+
+        raise ValidationError(code="intake.invalid_response", message="Could not extract intent JSON from Anthropic response", data={"keys": list(resp.keys())})
+
+
+class GoogleGeminiTriageProvider:
+    """
+    Triage provider using Google Gemini generateContent API.
+
+    This uses best-effort JSON extraction from returned text content.
+    """
+
+    def __init__(self, *, client: GoogleGeminiClient, model: str, api_key: Optional[str] = None) -> None:
+        self._client = client
+        self._model = model
+        self._api_key = api_key
+
+    @property
+    def model(self) -> str:
+        return self._model
+
+    def triage(self, *, input_text: str, system_prompt: str, intent_schema: Dict[str, Any]) -> Dict[str, Any]:
+        _ = intent_schema  # schema is enforced after triage by core contract validation
+        resp = self._client.generate_content(model=self._model, input_text=input_text, system_prompt=system_prompt, api_key=self._api_key)
+        if not isinstance(resp, dict):
+            raise ValidationError(code="intake.invalid_response", message="Gemini response must be an object")
+
+        candidates = resp.get("candidates")
+        if isinstance(candidates, list) and candidates:
+            for cand in candidates:
+                if not isinstance(cand, dict):
+                    continue
+                content = cand.get("content")
+                if not isinstance(content, dict):
+                    continue
+                parts = content.get("parts")
+                if not isinstance(parts, list):
+                    continue
+                for p in parts:
+                    if not isinstance(p, dict):
+                        continue
+                    txt = p.get("text")
+                    if isinstance(txt, str):
+                        obj = extract_first_json_object(txt)
+                        if isinstance(obj, dict):
+                            return obj
+
+        raise ValidationError(code="intake.invalid_response", message="Could not extract intent JSON from Gemini response", data={"keys": list(resp.keys())})
 

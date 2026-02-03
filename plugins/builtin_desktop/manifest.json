@@ -4,6 +4,10 @@
   "contracts_core_version": "0.1.0",
   "intents": [
     {
+      "intent_id": "desktop.tidy",
+      "description": "Legacy desktop tidy (built-in defaults; deterministic)."
+    },
+    {
       "intent_id": "desktop.tidy.run",
       "description": "Organize desktop using a user config file (deterministic).",
       "params_schema_ref": "contracts/plugins/builtin.desktop/schemas/desktop_rules.schema.json"

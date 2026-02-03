@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import re
+import shlex
 import shutil
 from pathlib import Path
 from typing import Any, Dict, List
@@ -880,6 +881,159 @@ def cmd_run_plan(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_intake(args: argparse.Namespace) -> int:
+    """
+    LLM-based triage to produce a contract-shaped Intent (no tool execution).
+    """
+    # Require explicit opt-in for network usage in intake.
+    if not bool(getattr(args, "allow_network_intake", False)):
+        print("intake.network_denied: pass --allow-network-intake to enable LLM triage")
+        return 2
+
+    text = args.text
+    if text is None:
+        # Read from stdin if not provided.
+        try:
+            import sys
+
+            text = sys.stdin.read()
+        except Exception:  # noqa: BLE001
+            text = ""
+    if not isinstance(text, str) or not text.strip():
+        print("intake.invalid: missing input text (use --text or pipe stdin)")
+        return 2
+
+    # Load available intents from plugins (builtin samples included).
+    plugins_dir = Path(args.plugins_dir) if args.plugins_dir else _default_plugins_dir()
+    reg = _load_plugins(plugins_dir)
+    intents = reg.list_intents()
+
+    scope_roots = list(args.scope_root or [])
+    if not scope_roots:
+        scope_roots = ["."]
+    scope = {"fs_roots": scope_roots, "allow_network": False}
+
+    try:
+        from nucleus.intake.provider_loading import load_triage_provider
+        from nucleus.intake.triage import triage_text_to_intent
+
+        loaded = load_triage_provider(
+            provider=args.provider,
+            model=args.model,
+            api_base=args.api_base,
+            api_key_env=args.api_key_env,
+        )
+        res = triage_text_to_intent(
+            input_text=text,
+            intents_catalog=intents,
+            scope=scope,
+            context={"source": "cli"},
+            provider=loaded.provider,
+            provider_id=loaded.provider_id,
+            model=loaded.model,
+            allow_network=True,
+        )
+    except Exception as e:  # noqa: BLE001
+        print(str(e))
+        return 1
+
+    if args.full:
+        out = {
+            "intent": res.intent,
+            "triage": {"provider": res.provider, "model": res.model},
+        }
+        print(json.dumps(out, ensure_ascii=False, indent=2))
+        return 0
+
+    print(json.dumps(res.intent, ensure_ascii=False, indent=2))
+    return 0
+
+
+def _alfred_query_to_intent(*, query: str) -> Dict[str, Any]:
+    """
+    Alfred input adapter (minimal):
+    - parses a query string into a contract-shaped Intent
+    - does not execute tools
+    """
+    if not isinstance(query, str) or not query.strip():
+        raise ValidationError(code="alfred.invalid", message="query must be a non-empty string")
+
+    tokens = shlex.split(query.strip())
+    if not tokens:
+        raise ValidationError(code="alfred.invalid", message="query must be a non-empty string")
+
+    # Normalize leading command tokens.
+    if tokens[0] == "desktop" and len(tokens) >= 2 and tokens[1] == "tidy":
+        tokens = ["tidy", *tokens[2:]]
+    if tokens[0] == "desktop.tidy":
+        tokens = ["tidy", *tokens[1:]]
+
+    if tokens[0] != "tidy":
+        raise ValidationError(code="alfred.invalid", message="Unsupported command (expected: tidy ...)", data={"tokens": tokens})
+
+    subcmd = tokens[1] if len(tokens) >= 2 else ""
+
+    # Defaults:
+    # - `tidy <config_path>` => preview
+    # - `tidy preview|run|restore <config_path>`
+    # - `tidy configure`
+    if subcmd in ("configure",):
+        intent_id = "desktop.tidy.configure"
+        params: Dict[str, Any] = {}
+        scope_roots = ["."]
+    elif subcmd in ("legacy",):
+        target_dir = tokens[2] if len(tokens) >= 3 else "~/Desktop"
+        intent_id = "desktop.tidy"
+        params = {"target_dir": target_dir}
+        scope_roots = [target_dir, f"{target_dir}/_Sorted"]
+    elif subcmd in ("preview", "run", "restore"):
+        if len(tokens) < 3:
+            raise ValidationError(code="alfred.invalid", message=f"Missing config_path for tidy {subcmd}")
+        config_path = tokens[2]
+        intent_id = f"desktop.tidy.{subcmd}"
+        params = {"config_path": config_path}
+        root_path, staging_dir = _load_desktop_rules_paths(config_path)
+        scope_roots = [root_path, staging_dir]
+    else:
+        # `tidy <config_path>`
+        if len(tokens) < 2:
+            raise ValidationError(code="alfred.invalid", message="Missing config_path (try: tidy preview <config_path>)")
+        config_path = tokens[1]
+        intent_id = "desktop.tidy.preview"
+        params = {"config_path": config_path}
+        root_path, staging_dir = _load_desktop_rules_paths(config_path)
+        scope_roots = [root_path, staging_dir]
+
+    return {
+        "intent_id": intent_id,
+        "params": params,
+        "scope": {"fs_roots": scope_roots, "allow_network": False},
+        "context": {"source": "alfred"},
+    }
+
+
+def cmd_alfred(args: argparse.Namespace) -> int:
+    """
+    Alfred input adapter: query -> Intent JSON (no execution).
+    Alfred can pass its `{query}` string into `--query`.
+    """
+    query = args.query
+    if query is None:
+        try:
+            import sys
+
+            query = sys.stdin.read()
+        except Exception:  # noqa: BLE001
+            query = ""
+    try:
+        intent = _alfred_query_to_intent(query=str(query))
+    except Exception as e:  # noqa: BLE001
+        print(str(e))
+        return 1
+    print(json.dumps(intent, ensure_ascii=False, indent=2))
+    return 0
+
+
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(prog="nuc", description="Nucleus CLI (framework)")
     sub = parser.add_subparsers(dest="cmd", required=True)
@@ -922,6 +1076,22 @@ def main(argv=None) -> int:
     p_show_trace.add_argument("--tail", type=int, help="Show only last N events")
     p_show_trace.add_argument("--pretty", action="store_true", help="Pretty-print each event as JSON")
     p_show_trace.set_defaults(func=cmd_show_trace)
+
+    p_intake = sub.add_parser("intake", help="LLM triage: text -> Intent (no execution)")
+    p_intake.add_argument("--text", help="Input text. If omitted, read from stdin.")
+    p_intake.add_argument("--provider", default="openai.responses", help="Provider ID or 'module:object' spec")
+    p_intake.add_argument("--model", default="gpt-4o-mini", help="Model name (provider-specific)")
+    p_intake.add_argument("--api-base", help="Provider API base URL (when supported)")
+    p_intake.add_argument("--api-key-env", default="OPENAI_API_KEY", help="API key env var name (when supported)")
+    p_intake.add_argument("--plugins-dir", default=str(_default_plugins_dir()), help="Plugins directory (for intent catalog)")
+    p_intake.add_argument("--scope-root", action="append", default=[], help="Filesystem scope root for emitted Intent (repeatable)")
+    p_intake.add_argument("--allow-network-intake", action="store_true", help="Enable OpenAI API call for intake triage")
+    p_intake.add_argument("--full", action="store_true", help="Output intent + triage metadata JSON")
+    p_intake.set_defaults(func=cmd_intake)
+
+    p_alfred = sub.add_parser("alfred", help="Alfred input adapter: query -> Intent JSON (no execution)")
+    p_alfred.add_argument("--query", help="Alfred query string (if omitted, read stdin)")
+    p_alfred.set_defaults(func=cmd_alfred)
 
     p_dry = sub.add_parser("dry-run-plan", help="Dry-run a plan JSON via deterministic tools")
     p_dry.add_argument("--plan", required=True, help="Path to plan JSON")

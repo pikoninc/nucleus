@@ -49,6 +49,7 @@ class TestNucCli(unittest.TestCase):
         self.assertEqual(rc, 0)
         data = json.loads(buf.getvalue())
         intent_ids = [it["intent_id"] for it in data]
+        self.assertIn("desktop.tidy", intent_ids)
         self.assertIn("desktop.tidy.run", intent_ids)
 
     def test_desktop_preview_outputs_plan_id(self) -> None:
@@ -154,6 +155,65 @@ class TestNucCli(unittest.TestCase):
             self.assertTrue((root / "pic.jpg").exists())
             self.assertFalse((staging / "Images" / "pic.jpg").exists())
 
+    def test_alfred_emits_intent_from_query(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            td_path = Path(td)
+            root = td_path / "Desktop"
+            staging = td_path / "Desktop_Staging"
+            root.mkdir(parents=True)
+
+            cfg_path = td_path / "desktop_rules.yml"
+            cfg_path.write_text(
+                "\n".join(
+                    [
+                        'version: "0.1"',
+                        'plugin: "builtin.desktop"',
+                        "",
+                        "root:",
+                        f'  path: "{root}"',
+                        f'  staging_dir: "{staging}"',
+                        "",
+                        "folders:",
+                        '  misc: "Misc"',
+                        "",
+                        "rules: []",
+                        "",
+                        "defaults:",
+                        "  unmatched_action:",
+                        '    move_to: "misc"',
+                        "",
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            buf = io.StringIO()
+            with redirect_stdout(buf):
+                rc = nuc_main(["alfred", "--query", f"tidy preview {cfg_path}"])
+            self.assertEqual(rc, 0)
+            obj = json.loads(buf.getvalue())
+            self.assertEqual(obj["intent_id"], "desktop.tidy.preview")
+            self.assertEqual(obj["params"]["config_path"], str(cfg_path))
+            self.assertEqual(obj["context"]["source"], "alfred")
+            self.assertEqual(set(obj["scope"]["fs_roots"]), {str(root), str(staging)})
+
+    def test_alfred_emits_legacy_desktop_tidy(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            td_path = Path(td)
+            root = td_path / "Desktop"
+            root.mkdir(parents=True)
+
+            buf = io.StringIO()
+            with redirect_stdout(buf):
+                rc = nuc_main(["alfred", "--query", f"tidy legacy {root}"])
+            self.assertEqual(rc, 0)
+            obj = json.loads(buf.getvalue())
+            self.assertEqual(obj["intent_id"], "desktop.tidy")
+            self.assertEqual(obj["params"]["target_dir"], str(root))
+            self.assertEqual(obj["context"]["source"], "alfred")
+            self.assertEqual(set(obj["scope"]["fs_roots"]), {str(root), f"{root}/_Sorted"})
+
     def test_init_scaffolds_app_dir_non_interactive(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             td_path = Path(td)
@@ -191,6 +251,40 @@ class TestNucCli(unittest.TestCase):
             out = buf.getvalue()
             self.assertIn("Transcript", out)
             self.assertIn("README.md", out)
+
+    def test_intake_requires_allow_network_flag(self) -> None:
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            rc = nuc_main(["intake", "--text", "hello"])
+        self.assertEqual(rc, 2)
+        self.assertIn("intake.network_denied", buf.getvalue())
+
+    def test_intake_missing_api_key_is_reported(self) -> None:
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            rc = nuc_main(["intake", "--text", "hello", "--allow-network-intake"])
+        self.assertEqual(rc, 1)
+        out = buf.getvalue()
+        self.assertIn("intake.missing_api_key", out)
+
+    def test_intake_can_use_non_openai_provider(self) -> None:
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            rc = nuc_main(
+                [
+                    "intake",
+                    "--text",
+                    "hello",
+                    "--allow-network-intake",
+                    "--provider",
+                    "nucleus.intake.testing:FirstAllowedIntentProvider",
+                    "--model",
+                    "stub",
+                ]
+            )
+        self.assertEqual(rc, 0)
+        obj = json.loads(buf.getvalue())
+        self.assertIn("intent_id", obj)
 
 
 if __name__ == "__main__":

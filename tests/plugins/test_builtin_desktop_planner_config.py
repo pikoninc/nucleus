@@ -9,6 +9,37 @@ from nucleus.core.errors import ValidationError
 
 
 class TestBuiltinDesktopPlannerConfig(unittest.TestCase):
+    def test_legacy_desktop_tidy_moves_into_sorted(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td) / "Desktop"
+            sorted_dir = root / "_Sorted"
+            root.mkdir(parents=True)
+
+            planner = BuiltinDesktopPlanner()
+            now = int(time.time())
+            intent = {
+                "intent_id": "desktop.tidy",
+                "params": {
+                    "target_dir": str(root),
+                    "exclude": ["*.tmp"],
+                    "entries": [
+                        {"name": "a.tmp", "is_file": True, "is_dir": False, "mtime": now},
+                        {"name": "pic.jpg", "is_file": True, "is_dir": False, "mtime": now},
+                        {"name": "doc.pdf", "is_file": True, "is_dir": False, "mtime": now},
+                    ],
+                },
+                "scope": {"fs_roots": [str(root), str(sorted_dir)], "allow_network": False},
+                "context": {"source": "test"},
+            }
+
+            plan = planner.plan(intent)
+            self.assertEqual(plan["plan_id"], "plan_desktop_tidy_legacy_001")
+            move_steps = [s for s in plan["steps"] if s.get("tool", {}).get("tool_id") == "fs.move"]
+            self.assertEqual(len(move_steps), 2)
+            tos = [s["tool"]["args"]["to"] for s in move_steps]
+            self.assertIn(f"{sorted_dir}/Images/pic.jpg", tos)
+            self.assertIn(f"{sorted_dir}/Documents/doc.pdf", tos)
+
     def test_tidy_preview_uses_config_rules(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             root = Path(td) / "Desktop"

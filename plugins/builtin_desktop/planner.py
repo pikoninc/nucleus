@@ -26,6 +26,7 @@ class BuiltinDesktopPlanner(Planner):
     - Execution is always via deterministic tools from a Plan (no AI-generated commands).
 
     Supported intents (latest implementation only):
+    - desktop.tidy: legacy defaults (no config file; deterministic; kept for backward compatibility)
     - desktop.tidy.configure: scaffold config (human-in-the-loop; no filesystem changes)
     - desktop.tidy.preview: config + entries snapshot -> Plan (dry-run friendly)
     - desktop.tidy.run: config + entries snapshot -> Plan (execute)
@@ -56,16 +57,23 @@ class BuiltinDesktopPlanner(Planner):
             raise ValidationError(code="intent.invalid", message="params.exclude must be an array of strings when provided")
 
         config_path = params.get("config_path")
-        if intent_id != "desktop.tidy.configure":
+        if intent_id in ("desktop.tidy.preview", "desktop.tidy.run", "desktop.tidy.restore"):
             if not isinstance(config_path, str) or not config_path:
                 raise ValidationError(code="intent.invalid", message="params.config_path is required")
-        elif config_path is not None and (not isinstance(config_path, str) or not config_path):
-            raise ValidationError(code="intent.invalid", message="params.config_path must be a non-empty string when provided")
+        elif intent_id == "desktop.tidy.configure":
+            if config_path is not None and (not isinstance(config_path, str) or not config_path):
+                raise ValidationError(code="intent.invalid", message="params.config_path must be a non-empty string when provided")
+        elif intent_id == "desktop.tidy":
+            # Legacy intent: config_path is optional/ignored; planner will use built-in defaults.
+            pass
 
         intent_obj = {
             "intent_id": intent_id,
             "params": {
                 "config_path": config_path,
+                "target_dir": params.get("target_dir"),
+                "staging_dir": params.get("staging_dir"),
+                "overwrite_strategy": params.get("overwrite_strategy"),
                 "include_dirs": include_dirs,
                 "exclude": exclude,
                 "entries": params.get("entries"),
@@ -75,6 +83,8 @@ class BuiltinDesktopPlanner(Planner):
             "context": context or {},
         }
 
+        if intent_id == "desktop.tidy":
+            return self._plan_legacy_tidy(intent_obj)
         if intent_id == "desktop.tidy.configure":
             return self._plan_configure(intent_obj)
         if intent_id == "desktop.tidy.preview":
@@ -84,6 +94,140 @@ class BuiltinDesktopPlanner(Planner):
         if intent_id == "desktop.tidy.restore":
             return self._plan_restore_from_config(intent_obj)
         raise ValidationError(code="intent.unknown", message=f"Unsupported intent_id: {intent_id}")
+
+    def _plan_legacy_tidy(self, intent: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Backward-compatible intent `desktop.tidy`.
+
+        This path does not require a config file; instead it uses a built-in rule set and a
+        default staging directory `<target_dir>/_Sorted`.
+        """
+        params = intent.get("params", {}) if isinstance(intent.get("params"), dict) else {}
+        target_dir = params.get("target_dir")
+        if target_dir is None:
+            target_dir = "~/Desktop"
+        if not isinstance(target_dir, str) or not target_dir:
+            raise ValidationError(code="intent.invalid", message="params.target_dir must be a non-empty string when provided")
+
+        root_path = self._expand_user(target_dir)
+        staging_dir = params.get("staging_dir")
+        if staging_dir is None:
+            staging_dir = f"{root_path}/_Sorted"
+        if not isinstance(staging_dir, str) or not staging_dir:
+            raise ValidationError(code="intent.invalid", message="params.staging_dir must be a non-empty string when provided")
+        staging_dir = self._expand_user(staging_dir)
+
+        fs_roots = intent.get("scope", {}).get("fs_roots", [])
+        if not isinstance(fs_roots, list):
+            fs_roots = []
+        fs_roots_expanded = [self._expand_user(x) for x in fs_roots if isinstance(x, str)]
+        if root_path not in fs_roots_expanded or staging_dir not in fs_roots_expanded:
+            raise ValidationError(
+                code="scope.invalid",
+                message="scope.fs_roots must include both params.target_dir and the resolved staging_dir",
+                data={"required": [root_path, staging_dir], "fs_roots": fs_roots},
+            )
+
+        overwrite_strategy = params.get("overwrite_strategy")
+        collision_strategy = "suffix_increment"
+        if overwrite_strategy in ("error", "overwrite", "skip"):
+            collision_strategy = str(overwrite_strategy)
+
+        cfg: Dict[str, Any] = {
+            "version": "0.1",
+            "plugin": "builtin.desktop",
+            "root": {"path": root_path, "staging_dir": staging_dir},
+            "folders": {
+                "screenshots": "Screenshots",
+                "documents": "Documents",
+                "images": "Images",
+                "archives": "Archives",
+                "misc": "Misc",
+            },
+            "rules": [
+                {
+                    "id": "legacy_screenshots",
+                    "match": {"any": [{"filename_regex": r"^Screen Shot "}]},
+                    "action": {"move_to": "screenshots"},
+                },
+                {
+                    "id": "legacy_images",
+                    "match": {"any": [{"ext_in": ["png", "jpg", "jpeg", "gif", "webp", "heic", "svg"]}]},
+                    "action": {"move_to": "images"},
+                },
+                {
+                    "id": "legacy_documents",
+                    "match": {"any": [{"ext_in": ["pdf", "doc", "docx", "xls", "xlsx", "ppt", "pptx", "txt", "md", "csv"]}]},
+                    "action": {"move_to": "documents"},
+                },
+                {
+                    "id": "legacy_archives",
+                    "match": {"any": [{"ext_in": ["zip", "7z", "rar", "tar", "gz", "bz2", "xz"]}]},
+                    "action": {"move_to": "archives"},
+                },
+            ],
+            "defaults": {"unmatched_action": {"move_to": "misc"}},
+            "safety": {"no_delete": True, "require_staging": True, "collision_strategy": collision_strategy, "ignore_patterns": [".DS_Store"]},
+        }
+
+        steps: List[Dict[str, Any]] = [
+            {
+                "step_id": "staging_list_root",
+                "title": "List root directory (staging)",
+                "phase": "staging",
+                "tool": {"tool_id": "fs.list", "args": {"path": root_path}, "dry_run_ok": True},
+                "preconditions": [f"Scope includes {root_path}"],
+            },
+            {
+                "step_id": "commit_create_sorted_dir",
+                "title": "Create _Sorted staging dir (commit)",
+                "phase": "commit",
+                "tool": {"tool_id": "fs.mkdir", "args": {"path": staging_dir, "parents": True, "exist_ok": True}, "dry_run_ok": True},
+                "expected_effects": [{"kind": "fs_mkdir", "summary": f"Create {staging_dir} if missing", "resources": [staging_dir]}],
+            },
+        ]
+
+        entries = params.get("entries")
+        move_steps, created_dirs = self._build_moves_from_entries_config(
+            root_path=root_path,
+            staging_dir=staging_dir,
+            cfg=cfg,
+            entries=entries,
+            include_dirs=bool(params.get("include_dirs", False)),
+            exclude=list(params.get("exclude", [])) if isinstance(params.get("exclude"), list) else [],
+        )
+
+        for d in created_dirs:
+            steps.append(
+                {
+                    "step_id": f"commit_mkdir_{d.replace('/', '_')}",
+                    "title": f"Create folder (commit): {d}",
+                    "phase": "commit",
+                    "tool": {"tool_id": "fs.mkdir", "args": {"path": d, "parents": True, "exist_ok": True}, "dry_run_ok": True},
+                    "expected_effects": [{"kind": "fs_mkdir", "summary": f"Create {d} if missing", "resources": [d]}],
+                }
+            )
+
+        steps.extend(move_steps)
+
+        summary = "Desktop tidy (legacy): no entries provided"
+        if move_steps:
+            summary = f"Desktop tidy (legacy): {len(move_steps)} move step(s) planned into {staging_dir}"
+        steps.append(
+            {
+                "step_id": "commit_notify",
+                "title": "Notify summary (commit)",
+                "phase": "commit",
+                "tool": {"tool_id": "notify.send", "args": {"message": summary}, "dry_run_ok": True},
+            }
+        )
+
+        return {
+            "plan_id": "plan_desktop_tidy_legacy_001",
+            "intent": intent,
+            "risk": {"level": "low", "reasons": ["Built-in legacy rules; no deletes; deterministic tools only."]},
+            "steps": steps,
+        }
 
     def _load_rules_config(self, config_path: str) -> Dict[str, Any]:
         p = Path(config_path).expanduser()

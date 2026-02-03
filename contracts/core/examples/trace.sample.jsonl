@@ -1,0 +1,7 @@
+{"ts":"2026-02-03T00:00:00Z","run_id":"run_001","event_type":"intent_received","intent_id":"desktop.tidy","message":"Intent received","data":{"intent":{"intent_id":"desktop.tidy"}}}
+{"ts":"2026-02-03T00:00:01Z","run_id":"run_001","event_type":"plan_generated","plan_id":"plan_desktop_tidy_001","message":"Plan generated","data":{"plan_id":"plan_desktop_tidy_001"}}
+{"ts":"2026-02-03T00:00:02Z","run_id":"run_001","event_type":"policy_decision","plan_id":"plan_desktop_tidy_001","policy":{"decision":"allow","reason_codes":["scope_ok","no_destructive_tools"],"summary":"Allowed by default policy"}}
+{"ts":"2026-02-03T00:00:03Z","run_id":"run_001","event_type":"step_started","plan_id":"plan_desktop_tidy_001","step_id":"staging_list_desktop","message":"Step started","data":{"tool_id":"fs.list","dry_run":true}}
+{"ts":"2026-02-03T00:00:04Z","run_id":"run_001","event_type":"step_finished","plan_id":"plan_desktop_tidy_001","step_id":"staging_list_desktop","message":"Step finished","data":{"ok":true}}
+{"ts":"2026-02-03T00:00:10Z","run_id":"run_001","event_type":"run_finished","plan_id":"plan_desktop_tidy_001","message":"Run finished","data":{"ok":true}}
+

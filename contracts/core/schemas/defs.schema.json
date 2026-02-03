@@ -1,0 +1,59 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://nucleus.local/contracts/core/schemas/defs.schema.json",
+  "title": "Nucleus Core Shared Definitions",
+  "type": "object",
+  "$defs": {
+    "Scope": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "fs_roots": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "allow_network": { "type": "boolean", "default": false }
+      },
+      "required": ["fs_roots"]
+    },
+    "ExpectedEffect": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "kind": { "type": "string", "minLength": 1 },
+        "summary": { "type": "string", "minLength": 1 },
+        "resources": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 }
+        }
+      },
+      "required": ["kind", "summary"]
+    },
+    "ToolCall": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "tool_id": { "type": "string", "minLength": 1 },
+        "args": { "type": "object", "default": {} },
+        "dry_run_ok": { "type": "boolean", "default": false }
+      },
+      "required": ["tool_id", "args"]
+    },
+    "PolicyDecision": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "decision": { "type": "string", "enum": ["allow", "deny"] },
+        "reason_codes": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 },
+          "default": []
+        },
+        "summary": { "type": "string" }
+      },
+      "required": ["decision"]
+    }
+  }
+}
+

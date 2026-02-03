@@ -1,0 +1,55 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://nucleus.local/contracts/core/schemas/plan.schema.json",
+  "title": "Nucleus Core Plan",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "plan_id": { "type": "string", "minLength": 1 },
+    "intent": { "$ref": "intent.schema.json" },
+    "risk": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "level": { "type": "string", "enum": ["low", "medium", "high"] },
+        "reasons": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 },
+          "default": []
+        }
+      }
+    },
+    "steps": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "step_id": { "type": "string", "minLength": 1 },
+          "title": { "type": "string", "minLength": 1 },
+          "phase": { "type": "string", "enum": ["staging", "commit", "rollback"] },
+          "tool": { "$ref": "defs.schema.json#/$defs/ToolCall" },
+          "preconditions": {
+            "type": "array",
+            "items": { "type": "string", "minLength": 1 },
+            "default": []
+          },
+          "expected_effects": {
+            "type": "array",
+            "items": { "$ref": "defs.schema.json#/$defs/ExpectedEffect" },
+            "default": []
+          },
+          "compensates_step_id": {
+            "type": "string",
+            "minLength": 1,
+            "description": "For rollback steps: which commit step this compensates (best-effort)."
+          }
+        },
+        "required": ["step_id", "title", "phase", "tool"]
+      }
+    }
+  },
+  "required": ["plan_id", "intent", "steps"]
+}
+

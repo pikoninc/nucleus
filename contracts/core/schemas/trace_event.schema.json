@@ -1,0 +1,32 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://nucleus.local/contracts/core/schemas/trace_event.schema.json",
+  "title": "Nucleus Core Trace Event",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "ts": { "type": "string", "format": "date-time" },
+    "run_id": { "type": "string", "minLength": 1 },
+    "event_type": {
+      "type": "string",
+      "enum": [
+        "intent_received",
+        "plan_generated",
+        "policy_decision",
+        "step_started",
+        "step_finished",
+        "step_denied",
+        "run_finished",
+        "error"
+      ]
+    },
+    "intent_id": { "type": "string" },
+    "plan_id": { "type": "string" },
+    "step_id": { "type": "string" },
+    "policy": { "$ref": "defs.schema.json#/$defs/PolicyDecision" },
+    "message": { "type": "string" },
+    "data": { "type": "object", "default": {} }
+  },
+  "required": ["ts", "run_id", "event_type"]
+}
+

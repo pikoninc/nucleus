@@ -1,0 +1,79 @@
+{
+  "plan_id": "plan_desktop_tidy_001",
+  "intent": {
+    "intent_id": "desktop.tidy",
+    "params": {
+      "target_dir": "~/Desktop"
+    },
+    "scope": {
+      "fs_roots": ["~/Desktop"],
+      "allow_network": false
+    },
+    "context": {
+      "source": "cli"
+    }
+  },
+  "risk": {
+    "level": "low",
+    "reasons": ["Moves files into categorized folders (no delete)."]
+  },
+  "steps": [
+    {
+      "step_id": "staging_list_desktop",
+      "title": "List desktop entries (staging)",
+      "phase": "staging",
+      "tool": {
+        "tool_id": "fs.list",
+        "args": { "path": "~/Desktop" },
+        "dry_run_ok": true
+      },
+      "preconditions": ["Scope includes ~/Desktop"]
+    },
+    {
+      "step_id": "commit_create_folders",
+      "title": "Create category folders (commit)",
+      "phase": "commit",
+      "tool": {
+        "tool_id": "fs.mkdir",
+        "args": { "path": "~/Desktop/_Sorted" },
+        "dry_run_ok": true
+      },
+      "expected_effects": [
+        {
+          "kind": "fs_mkdir",
+          "summary": "Create ~/Desktop/_Sorted if missing",
+          "resources": ["~/Desktop/_Sorted"]
+        }
+      ]
+    },
+    {
+      "step_id": "commit_move_files",
+      "title": "Move files into folders (commit)",
+      "phase": "commit",
+      "tool": {
+        "tool_id": "fs.move",
+        "args": { "from": "~/Desktop/file1.txt", "to": "~/Desktop/_Sorted/file1.txt" },
+        "dry_run_ok": true
+      },
+      "expected_effects": [
+        {
+          "kind": "fs_move",
+          "summary": "Move file1.txt into _Sorted",
+          "resources": ["~/Desktop/file1.txt", "~/Desktop/_Sorted/file1.txt"]
+        }
+      ]
+    },
+    {
+      "step_id": "rollback_move_files",
+      "title": "Rollback: move files back (rollback)",
+      "phase": "rollback",
+      "tool": {
+        "tool_id": "fs.move",
+        "args": { "from": "~/Desktop/_Sorted/file1.txt", "to": "~/Desktop/file1.txt" },
+        "dry_run_ok": true
+      },
+      "compensates_step_id": "commit_move_files"
+    }
+  ]
+}
+

@@ -1,0 +1,27 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://nucleus.local/contracts/core/schemas/intent.schema.json",
+  "title": "Nucleus Core Intent",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "intent_id": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Namespaced intent identifier, e.g. 'desktop.tidy' or 'pluginX.intentY'."
+    },
+    "params": {
+      "type": "object",
+      "default": {},
+      "description": "Intent parameters. Validation is plugin-defined; framework treats as opaque object."
+    },
+    "scope": { "$ref": "defs.schema.json#/$defs/Scope" },
+    "context": {
+      "type": "object",
+      "default": {},
+      "description": "UI/context metadata. Must not be used to bypass safety checks."
+    }
+  },
+  "required": ["intent_id", "params", "scope"]
+}
+

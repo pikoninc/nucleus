@@ -1,0 +1,14 @@
+{
+  "intent_id": "desktop.tidy",
+  "params": {
+    "target_dir": "~/Desktop"
+  },
+  "scope": {
+    "fs_roots": ["~/Desktop"],
+    "allow_network": false
+  },
+  "context": {
+    "source": "cli"
+  }
+}
+

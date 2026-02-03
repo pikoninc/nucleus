@@ -1,7 +1,7 @@
 version: 1
 id: TASK-0001
 plan_id: PLAN-0001
-status: todo # todo|doing|blocked|done
+status: done # todo|doing|blocked|done
 priority: P1
 
 title: Desktop Rules schema/example alignment check + document update procedure
@@ -22,4 +22,17 @@ scope:
 
 notes:
   - If implementation changes are required, split into a separate task
+
+results:
+  changes:
+    - Added plugin contract example validation:
+        - tests/contract/test_plugin_contract_examples.py
+        - scripts/check_contracts.py
+    - Hardened desktop rules schema to prevent accidental match-all rules:
+        - desktop_rules.schema.json now requires match.any or match.all to be non-empty
+  migration_guidance:
+    - If you previously relied on `match: {}` (match-all), replace it with an explicit atom such as:
+        - match:
+            any:
+              - filename_regex: ".*"
 

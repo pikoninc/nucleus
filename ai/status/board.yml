@@ -9,9 +9,9 @@ columns:
 
 cards:
   - id: TASK-0001
-    column: todo
+    column: done
     title: Desktop Rules schema/example alignment check + document update procedure
   - id: TASK-0002
-    column: todo
+    column: done
     title: builtin_desktop planner DSL safety review (validation/defaults)
 

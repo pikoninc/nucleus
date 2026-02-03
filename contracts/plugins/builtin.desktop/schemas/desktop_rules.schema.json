@@ -44,6 +44,10 @@
                 "default": []
               }
             },
+            "anyOf": [
+              { "required": ["any"], "properties": { "any": { "minItems": 1 } } },
+              { "required": ["all"], "properties": { "all": { "minItems": 1 } } }
+            ],
             "default": { "any": [], "all": [] }
           },
           "action": {

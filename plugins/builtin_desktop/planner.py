@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import fnmatch
 import json
+import os
 import re
 import time
 from pathlib import Path
@@ -103,10 +104,20 @@ class BuiltinDesktopPlanner(Planner):
 
         try:
             jsonschema.Draft202012Validator(schema).validate(raw)
+        except jsonschema.ValidationError as e:
+            raise ValidationError(
+                code="config.schema_invalid",
+                message="Config does not match schema",
+                data={"error": e.message, "path": list(e.path), "schema_path": list(e.schema_path)},
+            ) from e
         except Exception as e:  # noqa: BLE001
-            raise ValidationError(code="config.schema_invalid", message="Config does not match schema", data={"error": str(e)}) from e
+            raise ValidationError(code="config.schema_invalid", message="Config does not match schema", data={"error": repr(e)}) from e
 
         return raw
+
+    def _expand_user(self, path_str: str) -> str:
+        # Use os.path.expanduser so "~" expansion respects tests that patch $HOME.
+        return os.path.expanduser(path_str)
 
     def _plan_configure(self, intent: Dict[str, Any]) -> Dict[str, Any]:
         """
@@ -171,13 +182,14 @@ class BuiltinDesktopPlanner(Planner):
             raise ValidationError(code="intent.invalid", message="params.config_path is required for desktop.tidy.run/preview")
 
         cfg = self._load_rules_config(config_path)
-        root_path = str(cfg["root"]["path"])
-        staging_dir = str(cfg["root"]["staging_dir"])
+        root_path = self._expand_user(str(cfg["root"]["path"]))
+        staging_dir = self._expand_user(str(cfg["root"]["staging_dir"]))
 
         fs_roots = intent.get("scope", {}).get("fs_roots", [])
         if not isinstance(fs_roots, list):
             fs_roots = []
-        if root_path not in fs_roots or staging_dir not in fs_roots:
+        fs_roots_expanded = [self._expand_user(x) for x in fs_roots if isinstance(x, str)]
+        if root_path not in fs_roots_expanded or staging_dir not in fs_roots_expanded:
             raise ValidationError(
                 code="scope.invalid",
                 message="scope.fs_roots must include both config.root.path and config.root.staging_dir",
@@ -369,6 +381,35 @@ class BuiltinDesktopPlanner(Planner):
                 return str(folders_map[move_to])
             return move_to
 
+        def validate_dest_subpath(dest_sub: str, *, rule_id: Optional[str], source: str) -> str:
+            if not isinstance(dest_sub, str) or not dest_sub.strip():
+                raise ValidationError(
+                    code="config.invalid",
+                    message="rule.action.move_to must resolve to a non-empty subpath under staging_dir",
+                    data={"rule_id": rule_id, "source": source, "value": dest_sub},
+                )
+            norm = dest_sub.replace("\\", "/")
+            parts = [p for p in norm.split("/") if p != ""]
+            if not parts:
+                raise ValidationError(
+                    code="config.invalid",
+                    message="rule.action.move_to must resolve to a non-empty subpath under staging_dir",
+                    data={"rule_id": rule_id, "source": source, "value": dest_sub},
+                )
+            if norm.startswith("/") or norm.startswith("../") or "/../" in f"/{norm}/" or norm == "..":
+                raise ValidationError(
+                    code="config.invalid",
+                    message="rule.action.move_to must not be absolute or contain '..' path traversal",
+                    data={"rule_id": rule_id, "source": source, "value": dest_sub},
+                )
+            if any(p in (".", "..") for p in parts):
+                raise ValidationError(
+                    code="config.invalid",
+                    message="rule.action.move_to must not contain '.' or '..' path segments",
+                    data={"rule_id": rule_id, "source": source, "value": dest_sub},
+                )
+            return "/".join(parts)
+
         move_steps: List[Dict[str, Any]] = []
         created_dirs_set = set()  # type: ignore[var-annotated]
 
@@ -401,6 +442,17 @@ class BuiltinDesktopPlanner(Planner):
                         if isinstance(a, dict) and isinstance(a.get("move_to"), str) and a.get("move_to"):
                             dest_sub = resolve_move_to(str(a["move_to"]))
                         break
+
+            rule_id = None
+            if not is_dir:
+                # Best-effort: record the id of the first matching rule (if any) for clearer errors.
+                for r in rules:
+                    if isinstance(r, dict) and match_rule(r, item):
+                        rid = r.get("id")
+                        if isinstance(rid, str) and rid:
+                            rule_id = rid
+                        break
+            dest_sub = validate_dest_subpath(dest_sub, rule_id=rule_id, source="folders|literal")
 
             dest_dir = f"{staging_dir}/{dest_sub}"
             created_dirs_set.add(dest_dir)
@@ -438,13 +490,14 @@ class BuiltinDesktopPlanner(Planner):
             raise ValidationError(code="intent.invalid", message="params.config_path is required for desktop.tidy.restore")
 
         cfg = self._load_rules_config(config_path)
-        root_path = str(cfg["root"]["path"])
-        staging_dir = str(cfg["root"]["staging_dir"])
+        root_path = self._expand_user(str(cfg["root"]["path"]))
+        staging_dir = self._expand_user(str(cfg["root"]["staging_dir"]))
 
         fs_roots = intent.get("scope", {}).get("fs_roots", [])
         if not isinstance(fs_roots, list):
             fs_roots = []
-        if root_path not in fs_roots or staging_dir not in fs_roots:
+        fs_roots_expanded = [self._expand_user(x) for x in fs_roots if isinstance(x, str)]
+        if root_path not in fs_roots_expanded or staging_dir not in fs_roots_expanded:
             raise ValidationError(
                 code="scope.invalid",
                 message="scope.fs_roots must include both config.root.path and config.root.staging_dir",

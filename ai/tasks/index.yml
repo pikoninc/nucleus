@@ -3,9 +3,9 @@ tasks:
   - id: TASK-0001
     plan_id: PLAN-0001
     title: Desktop Rules schema/example alignment check + document update procedure
-    status: todo
+    status: done
   - id: TASK-0002
     plan_id: PLAN-0001
     title: builtin_desktop planner DSL safety review (validation/defaults)
-    status: todo
+    status: done
 

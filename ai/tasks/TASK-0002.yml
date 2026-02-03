@@ -2,7 +2,7 @@ version: 1
 id: TASK-0002
 plan_id: PLAN-0001
 title: builtin_desktop planner DSL safety review (validation/defaults)
-status: todo # todo|doing|blocked|done
+status: done # todo|doing|blocked|done
 priority: P1
 
 description: >
@@ -21,4 +21,12 @@ scope:
 
 notes:
   - If compatibility changes, record the rationale in the PLAN and TASK
+
+results:
+  changes:
+    - Expanded `~` when comparing config root/staging against `scope.fs_roots` (avoids false scope denial)
+    - Rejected unsafe `move_to` subpaths (absolute or containing `..`) to prevent path traversal out of staging_dir
+    - Improved schema validation error payload (`path`, `schema_path`, concise `error`)
+  tests:
+    - Extended tests/plugins/test_builtin_desktop_planner_config.py (TDD)
 

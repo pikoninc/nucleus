@@ -1,0 +1,27 @@
+{
+  "name": "nucleus",
+  "image": "mcr.microsoft.com/devcontainers/python:1-3.11-bookworm",
+  "remoteUser": "vscode",
+  "postCreateCommand": "python -m venv .venv && .venv/bin/python -m pip install -U pip",
+  "customizations": {
+    "vscode": {
+      "settings": {
+        "python.defaultInterpreterPath": "${containerWorkspaceFolder}/.venv/bin/python",
+        "python.testing.unittestEnabled": true,
+        "python.testing.pytestEnabled": false,
+        "python.testing.unittestArgs": [
+          "-v",
+          "-s",
+          "tests",
+          "-t",
+          ".",
+          "-p",
+          "test_*.py"
+        ]
+      },
+      "extensions": [
+        "ms-python.python"
+      ]
+    }
+  }
+}

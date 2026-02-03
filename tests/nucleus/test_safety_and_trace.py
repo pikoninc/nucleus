@@ -40,8 +40,8 @@ class TestNucleusSafetyAndTrace(unittest.TestCase):
             events = [json.loads(l) for l in lines]
             event_types = [e["event_type"] for e in events]
             self.assertIn("intent_received", event_types)
-            self.assertIn("policy_decision", event_types)
-            self.assertIn("step_denied", event_types)
+            # Missing/invalid scope is rejected at schema validation (before policy evaluation).
+            self.assertIn("error", event_types)
 
     def test_trace_emitted_on_successful_dry_run(self) -> None:
         with tempfile.TemporaryDirectory() as td:
@@ -97,6 +97,54 @@ class TestNucleusSafetyAndTrace(unittest.TestCase):
 
             out = self.kernel.run_plan(ctx, plan)
             self.assertEqual(out["plan_id"], "p3")
+
+    def test_denies_path_outside_scope(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            trace_path = Path(td) / "trace.jsonl"
+            ctx = RuntimeContext(run_id="run_test_4", dry_run=True, strict_dry_run=True, trace_path=trace_path)
+
+            # Declare scope rooted at temp dir, but attempt to stat a path outside it.
+            plan = {
+                "plan_id": "p4",
+                "intent": {"intent_id": "desktop.tidy", "params": {}, "scope": {"fs_roots": [td], "allow_network": False}},
+                "steps": [
+                    {
+                        "step_id": "s1",
+                        "title": "Stat outside scope",
+                        "phase": "staging",
+                        "tool": {"tool_id": "fs.stat", "args": {"path": "/"}, "dry_run_ok": True},
+                    }
+                ],
+            }
+
+            with self.assertRaises(Exception):
+                self.kernel.run_plan(ctx, plan)
+
+            lines = [l for l in trace_path.read_text(encoding="utf-8").splitlines() if l.strip()]
+            events = [json.loads(l) for l in lines]
+            event_types = [e["event_type"] for e in events]
+            self.assertIn("policy_decision", event_types)
+            self.assertIn("step_denied", event_types)
+
+    def test_invalid_plan_schema_emits_error_trace(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            trace_path = Path(td) / "trace.jsonl"
+            ctx = RuntimeContext(run_id="run_test_5", dry_run=True, strict_dry_run=True, trace_path=trace_path)
+
+            # Missing required fields (no steps array).
+            plan = {
+                "plan_id": "p5",
+                "intent": {"intent_id": "desktop.tidy", "params": {}, "scope": {"fs_roots": [td], "allow_network": False}},
+            }
+
+            with self.assertRaises(Exception):
+                self.kernel.run_plan(ctx, plan)
+
+            lines = [l for l in trace_path.read_text(encoding="utf-8").splitlines() if l.strip()]
+            events = [json.loads(l) for l in lines]
+            event_types = [e["event_type"] for e in events]
+            self.assertIn("intent_received", event_types)
+            self.assertIn("error", event_types)
 
 
 if __name__ == "__main__":

@@ -5,6 +5,7 @@ from typing import Any, Dict, List, Optional
 
 from .errors import PolicyDenied, ValidationError
 from .runtime_context import RuntimeContext
+from .scope import is_within_any_root, normalize_roots
 from ..registry.tool_registry import ToolRegistry
 
 
@@ -40,6 +41,10 @@ class PolicyEngine:
         if not isinstance(scope, dict) or not isinstance(scope.get("fs_roots"), list) or len(scope["fs_roots"]) < 1:
             return PolicyResult(decision="deny", reason_codes=["scope.missing"], summary="Explicit scope is required")
 
+        roots = normalize_roots(scope.get("fs_roots", []))
+        if len(roots) < 1:
+            return PolicyResult(decision="deny", reason_codes=["scope.invalid"], summary="Scope fs_roots must be valid paths")
+
         steps = plan.get("steps")
         if not isinstance(steps, list) or len(steps) < 1:
             return PolicyResult(decision="deny", reason_codes=["plan.steps_missing"], summary="Plan must have steps")
@@ -57,6 +62,27 @@ class PolicyEngine:
             tool_def = self._tools.get(tool_id)
             if tool_def is None:
                 return PolicyResult(decision="deny", reason_codes=["tool.unknown"], summary=f"Unknown tool: {tool_id}")
+
+            # Scope enforcement for filesystem tools: tool args must be within declared fs_roots.
+            if isinstance(tool_id, str) and tool_id.startswith("fs."):
+                # Common path keys:
+                # - fs.list/fs.stat/fs.mkdir: path
+                # - fs.move: from/to
+                args_obj = tool_call.get("args", {})
+                if not isinstance(args_obj, dict):
+                    return PolicyResult(decision="deny", reason_codes=["plan.args_invalid"], summary="Step.tool.args must be an object")
+                paths_to_check: List[str] = []
+                for k in ("path", "from", "to"):
+                    v = args_obj.get(k)
+                    if isinstance(v, str) and v:
+                        paths_to_check.append(v)
+                for p in paths_to_check:
+                    if not is_within_any_root(p, roots):
+                        return PolicyResult(
+                            decision="deny",
+                            reason_codes=["scope.out_of_bounds"],
+                            summary="Tool path outside declared scope: {}".format(p),
+                        )
 
             if tool_def.get("destructive") and not ctx.allow_destructive:
                 return PolicyResult(

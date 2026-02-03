@@ -1,16 +1,32 @@
 from __future__ import annotations
 
 from typing import Any, Dict, Optional
+from pathlib import Path
 
 from nucleus.registry.tool_registry import ToolRegistry
 from nucleus.trace.trace_emitter import TraceEmitter
 from nucleus.trace.trace_store_jsonl import TraceStoreJSONL
+from nucleus.contract_store import ContractStore
 
 from .executor import Executor
 from .planner import Planner
 from .errors import PolicyDenied
 from .policy_engine import PolicyEngine
 from .runtime_context import RuntimeContext
+
+
+_CORE_CONTRACTS: Optional[ContractStore] = None
+
+
+def _core_contracts() -> ContractStore:
+    global _CORE_CONTRACTS
+    if _CORE_CONTRACTS is None:
+        root = Path(__file__).resolve().parents[2]
+        schemas_dir = root / "contracts" / "core" / "schemas"
+        store = ContractStore(schemas_dir)
+        store.load()
+        _CORE_CONTRACTS = store
+    return _CORE_CONTRACTS
 
 
 class Kernel:
@@ -39,6 +55,24 @@ class Kernel:
         plan_id = plan.get("plan_id") if isinstance(plan.get("plan_id"), str) else None
 
         trace.emit("intent_received", intent_id=intent_id, plan_id=plan_id, message="Intent received", data={"intent": intent})
+
+        # Contract validation (public API): plan must validate before any policy/execution.
+        plan_errors = _core_contracts().validate("plan.schema.json", plan)
+        if plan_errors:
+            trace.emit(
+                "error",
+                intent_id=intent_id,
+                plan_id=plan_id,
+                message="Plan schema validation failed",
+                data={"errors": plan_errors},
+            )
+            from .errors import ValidationError  # local import to avoid cycles
+
+            raise ValidationError(
+                code="plan.schema_invalid",
+                message="Plan does not validate against contracts/core plan.schema.json",
+                data={"errors": plan_errors},
+            )
 
         policy_engine = PolicyEngine(self._tools)
         result = policy_engine.evaluate(ctx, plan)

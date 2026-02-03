@@ -1,0 +1,25 @@
+version: 1
+id: TASK-0001
+plan_id: PLAN-0001
+title: Desktop Rules schema/example の整合チェックと更新手順の明文化
+status: todo # todo|doing|blocked|done
+priority: P1
+
+description: >
+  builtin.desktop の desktop_rules schema と example を照合し、
+  変更時に守るべき互換性ルールと更新手順を `ai/` の運用として残す。
+
+acceptance_criteria:
+  - schema と example の不整合がない（検証が通る）
+  - 互換性破壊がある場合は明示され、移行指針が残る
+
+scope:
+  contracts:
+    - contracts/plugins/builtin.desktop/schemas/desktop_rules.schema.json
+    - contracts/plugins/builtin.desktop/examples/desktop_rules.example.yml
+  docs:
+    - ai/plans/PLAN-0001-desktop-dsl.yml
+
+notes:
+  - 実装変更を伴う場合は別タスクに分割する
+

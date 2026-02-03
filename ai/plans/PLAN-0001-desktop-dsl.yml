@@ -1,0 +1,43 @@
+version: 1
+id: PLAN-0001
+slug: desktop-dsl
+title: builtin_desktop の Desktop Rules DSL 運用整備
+status: draft # draft|active|done|archived
+
+source:
+  specs:
+    - specs/framework/02_contracts.md
+    - specs/framework/04_plugin_system.md
+  contracts:
+    - contracts/plugins/builtin.desktop/schemas/desktop_rules.schema.json
+    - contracts/plugins/builtin.desktop/examples/desktop_rules.example.yml
+  code:
+    - plugins/builtin_desktop/planner.py
+    - plugins/builtin_desktop/manifest.json
+
+goals:
+  - Desktop Rules DSL の仕様/実装/例の整合性を保ち、レビュー可能な変更単位に分割する
+  - 互換性と安全性（スコープ・権限・監査）を崩さずに拡張できる状態にする
+
+non_goals:
+  - デスクトップ自動化の実行基盤そのものの刷新
+
+constraints:
+  - 既存の examples とテストが通ること（破壊的変更なら移行を同時に用意）
+  - 変更理由と影響範囲を `ai/tasks/` に落とすこと
+
+deliverables:
+  - ai/tasks/TASK-0001.yml
+  - ai/tasks/TASK-0002.yml
+  - ai/status/board.yml
+  - ai/runs/RUN-0001.json
+
+risk_assessment:
+  level: medium # low|medium|high
+  notes:
+    - DSL変更はユーザ設定互換に影響し得るため、schema と examples の同時更新が必要
+
+test_plan:
+  - python scripts/check_contracts.py
+  - python -m unittest discover -s tests -t . -p "test_*.py"
+

@@ -1,0 +1,17 @@
+version: 1
+updated_at: "2026-02-03"
+
+columns:
+  - todo
+  - doing
+  - blocked
+  - done
+
+cards:
+  - id: TASK-0001
+    column: todo
+    title: Desktop Rules schema/example の整合チェックと更新手順の明文化
+  - id: TASK-0002
+    column: todo
+    title: builtin_desktop planner の DSL 処理の安全性確認（バリデーション/デフォルト）
+

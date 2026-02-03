@@ -1,0 +1,24 @@
+{
+  "version": 1,
+  "id": "RUN-0001",
+  "date": "2026-02-03",
+  "plan_id": "PLAN-0001",
+  "task_ids": ["TASK-0001", "TASK-0002"],
+  "summary": "ai/ 運用ディレクトリ初期化（テンプレート追加、.sessions を gitignore）。",
+  "changes": {
+    "paths_added": [
+      "ai/README.md",
+      "ai/prompts/",
+      "ai/plans/",
+      "ai/tasks/",
+      "ai/status/",
+      "ai/runs/"
+    ],
+    "paths_updated": [".gitignore"]
+  },
+  "results": {
+    "tests_ran": [],
+    "contracts_checked": false
+  }
+}
+

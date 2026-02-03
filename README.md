@@ -1,309 +1,255 @@
 # Nucleus
 
-**Nucleus** is a **plan-first execution runtime** for human–AI collaboration.
+Nucleus is a spec-driven, AI-augmented runtime framework designed to safely integrate large language models (LLMs) into real software systems by strictly separating thinking from execution.
 
-It turns human intent into **safe, deterministic actions** through a strict pipeline:
+It enables developers to use AI for understanding, structuring, and proposing actions—
+while guaranteeing that all execution remains deterministic, auditable, and under human control.
 
-> **Intent → Plan → Act → Trace**
+## What Problem Nucleus Solves
 
-Nucleus is not an app.  
-It is a **runtime framework** that other people can safely build on.
+Modern AI systems are excellent at reasoning, but unsafe when allowed to execute directly:
 
----
+- Non-deterministic behavior
+- Hidden state in conversation logs
+- Irreversible side effects
+- Poor auditability
+- Fragile collaboration between humans and AI agents
 
-## Why Nucleus exists
+Nucleus addresses this by enforcing a simple but strict rule:
 
-Modern AI tools are good at *deciding* what to do,  
-but dangerous at *directly doing* things.
+AI may think and propose.  
+Only the runtime may execute.
 
-Nucleus exists to answer a simple question:
+## What Nucleus Is
 
-> **How can AI assist execution without breaking safety, trust, or auditability?**
+Nucleus is:
 
-Nucleus solves this by enforcing:
-- explicit intent
-- executable plans
-- deterministic tools
-- guardrails and rollback
-- full traceability
+- A runtime architecture, not an autonomous agent
+- A spec-first framework, not prompt-driven automation
+- A foundation for human–AI collaboration with guarantees
+- A system where execution is deterministic and inspectable
 
----
+It is designed for engineers who want to use AI seriously—
+without sacrificing safety, reproducibility, or clarity.
+
+## What Nucleus Is Not
+
+Nucleus is not:
+
+- A fully autonomous AI agent
+- A system where LLMs execute OS or infrastructure commands
+- A workflow engine where chat logs define state
+- A black-box automation tool
+
+If you want AI to “just run things,” this framework is intentionally not that.
 
 ## Core Principles
 
-### 1. Plan-first execution
-Nothing runs without a plan.
+### 1. Separation of Thinking and Execution
 
-Every action must be expressed as a **Plan** that can be:
-- inspected
-- confirmed
-- dry-run
-- rejected
+Nucleus strictly separates responsibilities:
 
-AI never executes blindly.
+**Thinking**
 
----
+- Intent understanding
+- Classification
+- Structuring
+- Proposals
 
-### 2. Deterministic tools only
-AI does **not** run arbitrary shell commands.
+Performed by humans and LLMs
 
-All side effects go through **registered tools** with:
-- declared inputs/outputs
-- known side effects
-- optional dry-run support
+**Execution**
 
-This makes execution predictable and testable.
+- Actual operations
+- Side effects
+- State changes
 
----
+Performed only by a deterministic runtime
 
-### 3. Explicit scope and permissions
-Every Plan declares:
-- what resources it touches
-- where it is allowed to act
-- what level of risk it carries
+LLMs never execute.  
+The runtime never reasons.
 
-Nothing happens outside the declared scope.
+### 2. Specification as the Source of Truth
 
----
+Specifications (Specs) are the center of the system:
 
-### 4. Safety by default
-Nucleus enforces safety as a *framework invariant*:
+- Specs define what should happen and what is allowed
+- Specs are shared language between humans and AI
+- Specs are authoritative over code and conversations
 
-- no delete by default
-- staging before mutation
-- rollback paths when possible
-- confirmation gating by policy
-- full execution trace
+Conversation logs are context, never system state.
 
-Safety is not a plugin feature.  
-It is the core contract.
+### 3. Deterministic Execution
 
----
+- No LLMs are used during execution
+- Same input + same config → same result
+- All side effects go through explicit tools
+- Execution is traceable and designed for rollback
 
-### 5. Trace everything
-Every run produces an auditable event stream.
+This makes Nucleus suitable for production-grade systems.
 
-You can:
-- inspect what happened
-- understand why it happened
-- replay or debug executions
-- prove what was (and wasn’t) done
+## High-Level Architecture
 
----
-
-## Architecture Overview
-
-Nucleus is structured around four layers:
-
-[ UI Adapters ]
-↓
-[ Intent / Plan ]
-↓
-[ Nucleus Kernel ]
-↓
-[ Deterministic Tools ]
-
-
-### Kernel
-The Nucleus kernel orchestrates:
-- intent routing
-- plan generation
-- policy evaluation
-- execution control
-- trace emission
-
-### Plugins
-Plugins define *what* to do, not *how* to execute.
-
-A plugin:
-- declares supported intents
-- generates Plans
-
----
-
-## Developer quickstart (CLI)
-
-Install dependencies:
-
-```bash
-python -m pip install -r requirements.txt
+```text
+User / UI
+   ↓
+Input Intake (LLM)
+   ↓   IntentEnvelope
+Processing Unit
+   ↓
+Studio (LLM)
+   ↓   Manifest / Config Patch
+Planner / Compiler
+   ↓   Execution Plan
+Executor (Deterministic)
+   ↓
+Tools + Trace
 ```
 
-List tools:
+Nucleus provides this structure as a set of clearly separated layers.
 
-```bash
-python -m nucleus.cli.nuc list-tools --json
-```
+## Core Components and Responsibilities
 
-List plugin-provided intents (loads manifests from `plugins/`):
+### Input Intake
 
-```bash
-python -m nucleus.cli.nuc list-intents --json
-```
+Role
 
-Scaffold a desktop tidy config:
+- Accept natural language input
+- Tolerate ambiguity and incomplete intent
+- Normalize input into a structured IntentEnvelope
 
-```bash
-python -m nucleus.cli.nuc desktop configure --output /tmp/desktop_rules.yml
-```
+Constraints
 
-Preview (dry-run): `config_path` + deterministic preflight scan → Plan → dry-run tools:
+- No execution
+- No side effects
+- No configuration commitment
 
-```bash
-python -m nucleus.cli.nuc desktop preview --config-path /tmp/desktop_rules.yml --trace /tmp/trace.jsonl
-```
+Input Intake is the system’s entry point and intent clarifier.
 
-Run (execute): `config_path` + deterministic preflight scan → Plan → execute tools:
+### Processing Units
 
-```bash
-python -m nucleus.cli.nuc desktop run --config-path /tmp/desktop_rules.yml --trace /tmp/trace.jsonl
-```
+A processing unit is a domain-aware component that behaves according to a spec.
 
-Restore (execute): `config_path` + deterministic preflight walk of `staging_dir` → Plan → execute tools:
+Nucleus supports two forms of processing units with the same underlying structure.
 
-```bash
-python -m nucleus.cli.nuc desktop restore --config-path /tmp/desktop_rules.yml --trace /tmp/trace.jsonl
-```
+#### Application (App)
 
-Execute a plan JSON directly:
+An App represents an application-level processing unit.
 
-```bash
-python -m nucleus.cli.nuc run-plan --plan contracts/core/examples/plan.example.json --trace /tmp/trace.jsonl
-```
-- selects tools
-- follows core contracts
+Responsibilities
+
+- Acts as the initial entry point for user intent
+- Receives IntentEnvelope from Input Intake
+- Decides how the intent should be handled
+- May execute its own domain logic directly
+- May delegate or compose other processing units
+
+An App can operate entirely on its own  
+or act as an integrator of other units.
+
+#### Plugin
+
+A Plugin is a domain-focused processing unit.
+
+Responsibilities
+
+- Encapsulates rules and behavior of a specific domain
+- Uses declarative manifests and schemas where possible
+- Is designed to be reused across multiple Apps
+
+Plugins are optional.  
+They are included only when an App chooses to use them.
+
+#### Relationship Between Apps and Plugins
+
+- Apps and Plugins share the same structural model
+- Plugins do not require Apps to exist conceptually
+- Apps may use zero, one, or many Plugins
+- The difference lies in responsibility, not structure
+
+This symmetry allows Nucleus to scale from minimal setups to complex systems without changing its mental model.
+
+### Studio
+
+Role
+
+- Collaborate with AI to generate or update configuration
+- Produce only diffs or patches, never execution
+- Keep all changes human-reviewable
+
+Constraints
+
+- No execution
+- No tool access
+- No irreversible decisions
+
+### Planner / Compiler
+
+Role
+
+- Convert manifests into executable plans
+- Apply policies and safety constraints
+- Generate previews and dry runs
+
+### Executor
+
+Role
+
+- Execute plans exactly as defined
+- Invoke tools in a controlled manner
+- Record execution traces
+
+Constraints
+
+- No AI usage
+- No interpretation or decision-making
 
 ### Tools
-Tools are the only way to affect the real world:
-- filesystem
-- applications
-- external services
 
-They are deterministic, testable, and auditable.
+- The only source of side effects
+- Explicitly declare capabilities and risks
+- Callable only from the Executor
 
-### UI Adapters
-UI is an adapter — not the core.
+## Spec-Driven Development and AI Operations
 
-Input and output can be:
-- CLI
-- Alfred
-- notifications
-- dashboards
-- chat interfaces
+Development and operations in Nucleus follow a consistent lifecycle:
 
-The runtime stays the same.
+Spec → Plan → Task → Implementation → Status
 
----
+- Spec defines intent and constraints
+- Plan proposes how to fulfill the spec
+- Task represents the current state of work
+- Conversation logs are contextual only
 
-## What Nucleus is NOT
+An AI operations workspace supports this process while keeping system state explicit and auditable.
 
-- ❌ Not an AI agent that directly controls your system
-- ❌ Not a chatbot with shell access
-- ❌ Not an app-specific automation script
-- ❌ Not a UI framework
+## Safety Model
 
-Nucleus is a **runtime for controlled execution**.
+- AI never executes actions
+- Execution paths are deterministic
+- All side effects go through tools
+- Preview and rollback are first-class concepts
 
----
+## Intended Use Cases (Abstract)
 
-## Repository Structure (high-level)
+Nucleus is suitable for building:
 
-nucleus/
-├─ nucleus/ # Runtime kernel
-├─ contracts/ # Public execution contracts (schemas)
-├─ specs/ # Spec-driven design (framework + plugins)
-├─ plugins/ # Plugin implementations
-├─ tools/ # Deterministic execution tools
-├─ ui_adapters/ # Input/output adapters
-├─ tests/ # Contract + runtime + plugin tests
-└─ examples/ # Sample intents, plans, traces
+- AI-assisted applications with strict safety guarantees
+- Systems that translate ambiguous human intent into structured action
+- Spec-driven internal tools and products
+- Human–AI collaborative workflows
+- Adaptive assistants with controlled execution
 
+## Summary
 
-### Spec-driven development
-All development starts from **specs/**:
-- framework specs define invariants
-- plugin specs define behavior
-- contracts define the public API
+Nucleus is a framework where:
 
-Code follows specs — never the other way around.
+- Humans decide
+- AI proposes
+- Specifications define truth
+- The runtime executes deterministically
 
----
+Apps and Plugins are expressions of this philosophy—not the philosophy itself.
 
-## Example: Desktop tidy (builtin plugin)
-
-Nucleus ships with a reference plugin:
-
-**builtin.desktop**
-
-It demonstrates:
-- intent-based execution (`desktop.tidy.preview` / `desktop.tidy.run` / `desktop.tidy.restore`)
-- user-owned config files (YAML) validated by schema
-- plan-first behavior
-- staging-based filesystem moves (no deletes)
-- safe filesystem operations
-- notification-based UI
-
-This plugin exists to show *how plugins should be built*,  
-not as the final product.
-
----
-
-## Who is this for?
-
-Nucleus is for people who want to:
-
-- build AI-assisted automation **without losing control**
-- design human-in-the-loop systems
-- create safe execution layers for LLMs
-- build extensible runtimes, not one-off scripts
-- treat safety and auditability as first-class features
-
-Typical users:
-- platform / staff engineers
-- automation system designers
-- AI tool builders
-- teams working on human–AI workflows
-
----
-
-## Status
-
-Nucleus is currently **early-stage (v0.1)**.
-
-APIs may evolve, but the core principles are stable:
-- plan-first
-- deterministic execution
-- safety invariants
-- traceability
-
-Breaking changes to public contracts are explicitly versioned.
-
----
-
-## Contributing
-
-Contributions are welcome, but **structure matters**.
-
-Please read:
-- `specs/framework/INDEX.md` (framework rules)
-- `specs/plugins/*/INDEX.md` (plugin rules)
-
-In short:
-- framework changes require ADRs
-- plugins must obey core contracts
-- safety rules are non-negotiable
-
----
-
-## License
-
-MIT License  
-(see `LICENSE`)
-
----
-
-## Philosophy (one line)
-
-> **Nucleus externalizes execution control,  
-> so humans and AI can collaborate without accidents.**
+Nucleus exists to make AI-assisted systems reliable, understandable, and safe.
 

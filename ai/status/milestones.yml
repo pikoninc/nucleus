@@ -1,0 +1,11 @@
+version: 1
+milestones:
+  - id: MS-0001
+    title: Desktop DSL 運用整備（PLAN-0001）
+    plan_id: PLAN-0001
+    target_date: "2026-02-28"
+    status: active # planned|active|done|archived
+    tasks:
+      - TASK-0001
+      - TASK-0002
+

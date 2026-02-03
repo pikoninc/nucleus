@@ -32,3 +32,6 @@ dist/
 *.jsonl
 trace.jsonl
 
+# AI working area (conversation logs are not versioned)
+ai/.sessions/
+

@@ -1,0 +1,19 @@
+{
+  "version": 1,
+  "updated_at": "2026-02-03",
+  "counts": {
+    "plans": {
+      "draft": 1,
+      "active": 0,
+      "done": 0,
+      "archived": 0
+    },
+    "tasks": {
+      "todo": 2,
+      "doing": 0,
+      "blocked": 0,
+      "done": 0
+    }
+  }
+}
+

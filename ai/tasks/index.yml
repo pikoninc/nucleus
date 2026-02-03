@@ -1,0 +1,11 @@
+version: 1
+tasks:
+  - id: TASK-0001
+    plan_id: PLAN-0001
+    title: Desktop Rules schema/example の整合チェックと更新手順の明文化
+    status: todo
+  - id: TASK-0002
+    plan_id: PLAN-0001
+    title: builtin_desktop planner の DSL 処理の安全性確認（バリデーション/デフォルト）
+    status: todo
+

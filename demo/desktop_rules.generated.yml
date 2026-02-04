@@ -1,0 +1,12 @@
+root:
+  path: /workspaces/nucleus/demo/Desktop
+  staging_dir: /workspaces/nucleus/demo/Desktop_Aux
+folders:
+  Archives: /workspaces/nucleus/demo/Dest/Documents/Archives
+  Documents: /workspaces/nucleus/demo/Dest/Documents/Documents
+rules: []
+version: '0.1'
+plugin: builtin.desktop
+defaults:
+  unmatched_action:
+    move_to: Documents

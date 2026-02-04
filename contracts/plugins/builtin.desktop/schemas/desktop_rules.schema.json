@@ -18,7 +18,8 @@
     },
     "folders": {
       "type": "object",
-      "additionalProperties": { "type": "string", "minLength": 1 },
+      "description": "Map of folder keys to absolute destination paths (or ~-prefixed paths). Values are treated as destinations outside the desktop root.",
+      "additionalProperties": { "type": "string", "minLength": 1, "pattern": "^(~\\/|\\/)" },
       "default": {}
     },
     "rules": {
@@ -57,10 +58,17 @@
               "move_to": {
                 "type": "string",
                 "minLength": 1,
-                "description": "Folder key from `folders` (preferred) or a literal subfolder name under staging_dir."
+                "description": "Folder key from `folders`."
+              },
+              "delete": {
+                "type": "boolean",
+                "description": "If true, item is moved into staging_dir/ToDelete for later manual deletion."
               }
             },
-            "required": ["move_to"]
+            "oneOf": [
+              { "required": ["move_to"] },
+              { "required": ["delete"], "properties": { "delete": { "const": true } } }
+            ]
           }
         },
         "required": ["id", "match", "action"]
@@ -85,7 +93,6 @@
       "additionalProperties": false,
       "properties": {
         "no_delete": { "type": "boolean", "default": true },
-        "require_staging": { "type": "boolean", "default": true },
         "collision_strategy": {
           "type": "string",
           "enum": ["error", "skip", "overwrite", "suffix_increment"],

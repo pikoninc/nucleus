@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import json
 from typing import Any, Dict, List
+
+from nucleus.core.errors import ValidationError
 
 
 class FirstAllowedIntentProvider:
@@ -54,4 +57,51 @@ class ModelAsIntentProvider:
     def triage(self, *, input_text: str, system_prompt: str, intent_schema: Dict[str, Any]) -> Dict[str, Any]:
         _ = (input_text, system_prompt, intent_schema)
         return {"intent_id": self._model, "params": {}, "scope": {"fs_roots": ["."], "allow_network": False}, "context": {}}
+
+
+class RaiseValidationErrorProvider:
+    """
+    Provider for CLI tests: always raises a ValidationError with a data payload.
+    """
+
+    def __init__(self, model: str = "stub", **_kwargs: Any) -> None:
+        self._model = model
+
+    @property
+    def model(self) -> str:
+        return self._model
+
+    def triage(self, *, input_text: str, system_prompt: str, intent_schema: Dict[str, Any]) -> Dict[str, Any]:
+        _ = (input_text, system_prompt, intent_schema)
+        raise ValidationError(
+            code="intake.openai_http_error",
+            message="OpenAI HTTP error",
+            data={"status": 401, "body": "invalid_api_key"},
+        )
+
+
+class ModelAsJsonProvider:
+    """
+    Deterministic provider for tests/examples.
+
+    It returns a JSON object parsed from the provided model string.
+    Useful for testing non-intent LLM flows (e.g. config generation) without network.
+    """
+
+    def __init__(self, model: str = "{}", **_kwargs: Any) -> None:
+        self._model = model
+
+    @property
+    def model(self) -> str:
+        return self._model
+
+    def triage(self, *, input_text: str, system_prompt: str, intent_schema: Dict[str, Any]) -> Dict[str, Any]:
+        _ = (input_text, system_prompt, intent_schema)
+        try:
+            obj = json.loads(self._model)
+        except Exception as e:  # noqa: BLE001
+            raise ValidationError(code="intake.invalid_response", message="ModelAsJsonProvider model was not valid JSON", data={"error": repr(e)}) from e
+        if not isinstance(obj, dict):
+            raise ValidationError(code="intake.invalid_response", message="ModelAsJsonProvider must decode to a JSON object")
+        return obj
 

@@ -25,12 +25,10 @@ class BuiltinDesktopPlanner(Planner):
     - Plugin developers own a deterministic "sorting engine" (config -> Plan).
     - Execution is always via deterministic tools from a Plan (no AI-generated commands).
 
-    Supported intents (latest implementation only):
-    - desktop.tidy: legacy defaults (no config file; deterministic; kept for backward compatibility)
+    Supported intents:
     - desktop.tidy.configure: scaffold config (human-in-the-loop; no filesystem changes)
     - desktop.tidy.preview: config + entries snapshot -> Plan (dry-run friendly)
     - desktop.tidy.run: config + entries snapshot -> Plan (execute)
-    - desktop.tidy.restore: config + staging walk snapshot -> Plan (execute)
     """
 
     def plan(self, intent: Dict[str, Any]) -> Dict[str, Any]:
@@ -57,15 +55,12 @@ class BuiltinDesktopPlanner(Planner):
             raise ValidationError(code="intent.invalid", message="params.exclude must be an array of strings when provided")
 
         config_path = params.get("config_path")
-        if intent_id in ("desktop.tidy.preview", "desktop.tidy.run", "desktop.tidy.restore"):
+        if intent_id in ("desktop.tidy.preview", "desktop.tidy.run"):
             if not isinstance(config_path, str) or not config_path:
                 raise ValidationError(code="intent.invalid", message="params.config_path is required")
         elif intent_id == "desktop.tidy.configure":
             if config_path is not None and (not isinstance(config_path, str) or not config_path):
                 raise ValidationError(code="intent.invalid", message="params.config_path must be a non-empty string when provided")
-        elif intent_id == "desktop.tidy":
-            # Legacy intent: config_path is optional/ignored; planner will use built-in defaults.
-            pass
 
         intent_obj = {
             "intent_id": intent_id,
@@ -83,16 +78,12 @@ class BuiltinDesktopPlanner(Planner):
             "context": context or {},
         }
 
-        if intent_id == "desktop.tidy":
-            return self._plan_legacy_tidy(intent_obj)
         if intent_id == "desktop.tidy.configure":
             return self._plan_configure(intent_obj)
         if intent_id == "desktop.tidy.preview":
             return self._plan_tidy_from_config(intent_obj, preview=True)
         if intent_id == "desktop.tidy.run":
             return self._plan_tidy_from_config(intent_obj, preview=False)
-        if intent_id == "desktop.tidy.restore":
-            return self._plan_restore_from_config(intent_obj)
         raise ValidationError(code="intent.unknown", message=f"Unsupported intent_id: {intent_id}")
 
     def _plan_legacy_tidy(self, intent: Dict[str, Any]) -> Dict[str, Any]:
@@ -333,16 +324,35 @@ class BuiltinDesktopPlanner(Planner):
         cfg = self._load_rules_config(config_path)
         root_path = self._expand_user(str(cfg["root"]["path"]))
         staging_dir = self._expand_user(str(cfg["root"]["staging_dir"]))
+        to_delete_dir = f"{staging_dir}/ToDelete"
 
         fs_roots = intent.get("scope", {}).get("fs_roots", [])
         if not isinstance(fs_roots, list):
             fs_roots = []
         fs_roots_expanded = [self._expand_user(x) for x in fs_roots if isinstance(x, str)]
-        if root_path not in fs_roots_expanded or staging_dir not in fs_roots_expanded:
+
+        def _within(root: str, p: str) -> bool:
+            try:
+                return os.path.commonpath([root, p]) == root
+            except Exception:  # noqa: BLE001
+                return False
+
+        def _scope_allows(p: str) -> bool:
+            return any(_within(r, p) for r in fs_roots_expanded)
+
+        # Required scope roots:
+        required_paths: List[str] = [root_path, staging_dir, to_delete_dir]
+        folders_map = cfg.get("folders", {}) if isinstance(cfg.get("folders"), dict) else {}
+        for _k, v in folders_map.items():
+            if isinstance(v, str) and v:
+                required_paths.append(self._expand_user(v))
+
+        missing = [p for p in required_paths if not _scope_allows(p)]
+        if missing:
             raise ValidationError(
                 code="scope.invalid",
-                message="scope.fs_roots must include both config.root.path and config.root.staging_dir",
-                data={"required": [root_path, staging_dir], "fs_roots": fs_roots},
+                message="scope.fs_roots must include root, staging_dir/ToDelete, and all destination folders",
+                data={"required": missing, "fs_roots": fs_roots},
             )
 
         steps: List[Dict[str, Any]] = [
@@ -368,10 +378,12 @@ class BuiltinDesktopPlanner(Planner):
         move_steps, created_dirs = self._build_moves_from_entries_config(
             root_path=root_path,
             staging_dir=staging_dir,
+            to_delete_dir=to_delete_dir,
             cfg=cfg,
             entries=entries,
             include_dirs=bool(intent["params"].get("include_dirs", False)),
             exclude=list(intent["params"].get("exclude", [])),
+            fs_roots=fs_roots_expanded,
         )
 
         for d in created_dirs:
@@ -387,9 +399,9 @@ class BuiltinDesktopPlanner(Planner):
 
         steps.extend(move_steps)
 
-        summary = "Desktop tidy (config): no entries provided"
+        summary = "Desktop tidy: no entries provided"
         if move_steps:
-            summary = f"Desktop tidy (config): {len(move_steps)} move step(s) planned into {staging_dir}"
+            summary = f"Desktop tidy: {len(move_steps)} move step(s) planned"
 
         steps.append(
             {
@@ -403,7 +415,7 @@ class BuiltinDesktopPlanner(Planner):
         return {
             "plan_id": "plan_desktop_tidy_preview_001" if preview else "plan_desktop_tidy_run_001",
             "intent": intent,
-            "risk": {"level": "low", "reasons": ["Config-driven staging; no deletes; deterministic tools only."]},
+            "risk": {"level": "low", "reasons": ["Config-driven moves; delete is implemented as move to ToDelete; deterministic tools only."]},
             "steps": steps,
         }
 
@@ -412,10 +424,12 @@ class BuiltinDesktopPlanner(Planner):
         *,
         root_path: str,
         staging_dir: str,
+        to_delete_dir: str,
         cfg: Dict[str, Any],
         entries: Any,
         include_dirs: bool,
         exclude: List[str],
+        fs_roots: List[str],
     ) -> Tuple[List[Dict[str, Any]], List[str]]:
         if entries is None:
             return ([], [])
@@ -525,39 +539,49 @@ class BuiltinDesktopPlanner(Planner):
                 all_ok = all(match_atom(a, entry) for a in all_atoms if isinstance(a, dict))
             return any_ok and all_ok
 
-        def resolve_move_to(move_to: str) -> str:
-            if move_to in folders_map and isinstance(folders_map.get(move_to), str) and folders_map.get(move_to):
-                return str(folders_map[move_to])
-            return move_to
+        def _within(root: str, p: str) -> bool:
+            try:
+                return os.path.commonpath([root, p]) == root
+            except Exception:  # noqa: BLE001
+                return False
 
-        def validate_dest_subpath(dest_sub: str, *, rule_id: Optional[str], source: str) -> str:
-            if not isinstance(dest_sub, str) or not dest_sub.strip():
+        def _scope_allows(p: str) -> bool:
+            return any(_within(r, p) for r in fs_roots)
+
+        def resolve_folder_dest_path(folder_key: str, *, rule_id: Optional[str]) -> str:
+            if not isinstance(folder_key, str) or not folder_key.strip():
                 raise ValidationError(
                     code="config.invalid",
-                    message="rule.action.move_to must resolve to a non-empty subpath under staging_dir",
-                    data={"rule_id": rule_id, "source": source, "value": dest_sub},
+                    message="rule.action.move_to must be a non-empty folder key",
+                    data={"rule_id": rule_id, "value": folder_key},
                 )
-            norm = dest_sub.replace("\\", "/")
-            parts = [p for p in norm.split("/") if p != ""]
-            if not parts:
+            if folder_key not in folders_map:
                 raise ValidationError(
                     code="config.invalid",
-                    message="rule.action.move_to must resolve to a non-empty subpath under staging_dir",
-                    data={"rule_id": rule_id, "source": source, "value": dest_sub},
+                    message="rule.action.move_to must reference an existing key in folders",
+                    data={"rule_id": rule_id, "move_to": folder_key, "folders_keys": sorted([k for k in folders_map.keys() if isinstance(k, str)])},
                 )
-            if norm.startswith("/") or norm.startswith("../") or "/../" in f"/{norm}/" or norm == "..":
+            raw = folders_map.get(folder_key)
+            if not isinstance(raw, str) or not raw.strip():
                 raise ValidationError(
                     code="config.invalid",
-                    message="rule.action.move_to must not be absolute or contain '..' path traversal",
-                    data={"rule_id": rule_id, "source": source, "value": dest_sub},
+                    message="folders[move_to] must be a non-empty string path",
+                    data={"rule_id": rule_id, "move_to": folder_key, "value": raw},
                 )
-            if any(p in (".", "..") for p in parts):
+            dest = self._expand_user(str(raw))
+            if not os.path.isabs(dest):
                 raise ValidationError(
                     code="config.invalid",
-                    message="rule.action.move_to must not contain '.' or '..' path segments",
-                    data={"rule_id": rule_id, "source": source, "value": dest_sub},
+                    message="folders values must be absolute paths (or ~-prefixed)",
+                    data={"rule_id": rule_id, "move_to": folder_key, "value": raw},
                 )
-            return "/".join(parts)
+            if not _scope_allows(dest):
+                raise ValidationError(
+                    code="scope.invalid",
+                    message="Destination folder is outside scope.fs_roots",
+                    data={"rule_id": rule_id, "dest": dest, "fs_roots": fs_roots},
+                )
+            return dest
 
         move_steps: List[Dict[str, Any]] = []
         created_dirs_set = set()  # type: ignore[var-annotated]
@@ -581,16 +605,16 @@ class BuiltinDesktopPlanner(Planner):
             if (not is_file) and (not is_dir):
                 continue
 
-            if is_dir:
-                dest_sub = "Folders"
-            else:
-                dest_sub = resolve_move_to(unmatched_move_to)
-                for r in rules:
-                    if isinstance(r, dict) and match_rule(r, item):
-                        a = r.get("action", {})
-                        if isinstance(a, dict) and isinstance(a.get("move_to"), str) and a.get("move_to"):
-                            dest_sub = resolve_move_to(str(a["move_to"]))
-                        break
+            delete = False
+            dest_key = unmatched_move_to
+            for r in rules:
+                if isinstance(r, dict) and match_rule(r, item):
+                    a = r.get("action", {})
+                    if isinstance(a, dict) and bool(a.get("delete", False)):
+                        delete = True
+                    elif isinstance(a, dict) and isinstance(a.get("move_to"), str) and a.get("move_to"):
+                        dest_key = str(a["move_to"])
+                    break
 
             rule_id = None
             if not is_dir:
@@ -601,9 +625,12 @@ class BuiltinDesktopPlanner(Planner):
                         if isinstance(rid, str) and rid:
                             rule_id = rid
                         break
-            dest_sub = validate_dest_subpath(dest_sub, rule_id=rule_id, source="folders|literal")
-
-            dest_dir = f"{staging_dir}/{dest_sub}"
+            if delete:
+                dest_dir = to_delete_dir
+                dest_label = "ToDelete"
+            else:
+                dest_dir = resolve_folder_dest_path(dest_key, rule_id=rule_id)
+                dest_label = dest_key
             created_dirs_set.add(dest_dir)
 
             src = f"{root_path}/{name}"
@@ -613,7 +640,7 @@ class BuiltinDesktopPlanner(Planner):
             move_steps.append(
                 {
                     "step_id": move_step_id,
-                    "title": f"Move: {name} -> {dest_sub}",
+                    "title": f"Move: {name} -> {dest_label}",
                     "phase": "commit",
                     "tool": {
                         "tool_id": "fs.move",
@@ -623,7 +650,7 @@ class BuiltinDesktopPlanner(Planner):
                     "expected_effects": [
                         {
                             "kind": "fs_move",
-                            "summary": f"Move {name} -> {dest_sub} (on_conflict={collision_strategy})",
+                            "summary": f"Move {name} -> {dest_label} (on_conflict={collision_strategy})",
                             "resources": [src, dst],
                         }
                     ],

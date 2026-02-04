@@ -9,42 +9,18 @@ from nucleus.core.errors import ValidationError
 
 
 class TestBuiltinDesktopPlannerConfig(unittest.TestCase):
-    def test_legacy_desktop_tidy_moves_into_sorted(self) -> None:
-        with tempfile.TemporaryDirectory() as td:
-            root = Path(td) / "Desktop"
-            sorted_dir = root / "_Sorted"
-            root.mkdir(parents=True)
-
-            planner = BuiltinDesktopPlanner()
-            now = int(time.time())
-            intent = {
-                "intent_id": "desktop.tidy",
-                "params": {
-                    "target_dir": str(root),
-                    "exclude": ["*.tmp"],
-                    "entries": [
-                        {"name": "a.tmp", "is_file": True, "is_dir": False, "mtime": now},
-                        {"name": "pic.jpg", "is_file": True, "is_dir": False, "mtime": now},
-                        {"name": "doc.pdf", "is_file": True, "is_dir": False, "mtime": now},
-                    ],
-                },
-                "scope": {"fs_roots": [str(root), str(sorted_dir)], "allow_network": False},
-                "context": {"source": "test"},
-            }
-
-            plan = planner.plan(intent)
-            self.assertEqual(plan["plan_id"], "plan_desktop_tidy_legacy_001")
-            move_steps = [s for s in plan["steps"] if s.get("tool", {}).get("tool_id") == "fs.move"]
-            self.assertEqual(len(move_steps), 2)
-            tos = [s["tool"]["args"]["to"] for s in move_steps]
-            self.assertIn(f"{sorted_dir}/Images/pic.jpg", tos)
-            self.assertIn(f"{sorted_dir}/Documents/doc.pdf", tos)
-
     def test_tidy_preview_uses_config_rules(self) -> None:
         with tempfile.TemporaryDirectory() as td:
-            root = Path(td) / "Desktop"
-            staging = Path(td) / "Desktop_Staging"
+            td_path = Path(td)
+            root = td_path / "Desktop"
+            staging = td_path / "Desktop_Aux"
+            docs = td_path / "Documents"
+            pics = td_path / "Pictures"
+            downloads = td_path / "Downloads"
             root.mkdir(parents=True)
+            docs.mkdir(parents=True)
+            pics.mkdir(parents=True)
+            downloads.mkdir(parents=True)
 
             cfg_path = Path(td) / "desktop_rules.yml"
             cfg_path.write_text(
@@ -58,8 +34,9 @@ class TestBuiltinDesktopPlannerConfig(unittest.TestCase):
                         f'  staging_dir: "{staging}"',
                         "",
                         "folders:",
-                        '  images: "Images"',
-                        '  misc: "Misc"',
+                        f'  images: "{pics}"',
+                        f'  documents: "{docs}"',
+                        f'  downloads: "{downloads}"',
                         "",
                         "rules:",
                         '  - id: "r_images"',
@@ -68,14 +45,26 @@ class TestBuiltinDesktopPlannerConfig(unittest.TestCase):
                         '        - ext_in: ["jpg"]',
                         "    action:",
                         '      move_to: "images"',
+                        '  - id: "r_docs"',
+                        "    match:",
+                        "      any:",
+                        '        - ext_in: ["pdf"]',
+                        "    action:",
+                        '      move_to: "documents"',
+                        '  - id: "r_tmp_delete"',
+                        "    match:",
+                        "      any:",
+                        '        - ext_in: ["tmp"]',
+                        "    action:",
+                        "      delete: true",
                         "",
                         "defaults:",
                         "  unmatched_action:",
-                        '    move_to: "misc"',
+                        '    move_to: "downloads"',
                         "",
                         "safety:",
                         '  collision_strategy: "suffix_increment"',
-                        '  ignore_patterns: ["*.tmp"]',
+                        "  ignore_patterns: []",
                         "",
                     ]
                 )
@@ -93,19 +82,22 @@ class TestBuiltinDesktopPlannerConfig(unittest.TestCase):
                         {"name": "a.tmp", "is_file": True, "is_dir": False, "mtime": now},
                         {"name": "pic.jpg", "is_file": True, "is_dir": False, "mtime": now},
                         {"name": "doc.pdf", "is_file": True, "is_dir": False, "mtime": now},
+                        {"name": "misc.bin", "is_file": True, "is_dir": False, "mtime": now},
                     ],
                 },
-                "scope": {"fs_roots": [str(root), str(staging)], "allow_network": False},
+                "scope": {"fs_roots": [str(root), str(staging), str(docs), str(pics), str(downloads)], "allow_network": False},
                 "context": {"source": "test"},
             }
 
             plan = planner.plan(intent)
             self.assertEqual(plan["plan_id"], "plan_desktop_tidy_preview_001")
             move_steps = [s for s in plan["steps"] if s.get("tool", {}).get("tool_id") == "fs.move"]
-            self.assertEqual(len(move_steps), 2)
+            self.assertEqual(len(move_steps), 4)
             tos = [s["tool"]["args"]["to"] for s in move_steps]
-            self.assertIn(f"{staging}/Images/pic.jpg", tos)
-            self.assertIn(f"{staging}/Misc/doc.pdf", tos)
+            self.assertIn(f"{pics}/pic.jpg", tos)
+            self.assertIn(f"{docs}/doc.pdf", tos)
+            self.assertIn(f"{downloads}/misc.bin", tos)
+            self.assertIn(f"{staging}/ToDelete/a.tmp", tos)
 
     def test_tidy_preview_scope_check_expands_user_paths(self) -> None:
         with tempfile.TemporaryDirectory() as td:
@@ -113,8 +105,10 @@ class TestBuiltinDesktopPlannerConfig(unittest.TestCase):
             os.environ["HOME"] = td
             try:
                 root = Path(td) / "Desktop"
-                staging = Path(td) / "Desktop_Staging"
+                staging = Path(td) / "Desktop_Aux"
+                docs = Path(td) / "Documents"
                 root.mkdir(parents=True)
+                docs.mkdir(parents=True)
 
                 cfg_path = Path(td) / "desktop_rules.yml"
                 cfg_path.write_text(
@@ -125,10 +119,10 @@ class TestBuiltinDesktopPlannerConfig(unittest.TestCase):
                             "",
                             "root:",
                             '  path: "~/Desktop"',
-                            '  staging_dir: "~/Desktop_Staging"',
+                            '  staging_dir: "~/Desktop_Aux"',
                             "",
                             "folders:",
-                            '  misc: "Misc"',
+                            '  documents: "~/Documents"',
                             "",
                             "rules:",
                             '  - id: "r_any"',
@@ -136,7 +130,7 @@ class TestBuiltinDesktopPlannerConfig(unittest.TestCase):
                             "      any:",
                             '        - ext_in: ["txt"]',
                             "    action:",
-                            '      move_to: "misc"',
+                            '      move_to: "documents"',
                             "",
                         ]
                     )
@@ -150,7 +144,7 @@ class TestBuiltinDesktopPlannerConfig(unittest.TestCase):
                     "intent_id": "desktop.tidy.preview",
                     "params": {"config_path": str(cfg_path), "entries": [{"name": "a.txt", "is_file": True, "is_dir": False, "mtime": now}]},
                     # fs_roots uses expanded absolute paths; config uses "~".
-                    "scope": {"fs_roots": [str(root), str(staging)], "allow_network": False},
+                    "scope": {"fs_roots": [str(root), str(staging), str(docs)], "allow_network": False},
                     "context": {"source": "test"},
                 }
 
@@ -209,7 +203,7 @@ class TestBuiltinDesktopPlannerConfig(unittest.TestCase):
     def test_tidy_preview_rejects_path_traversal_in_folder_mapping(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             root = Path(td) / "Desktop"
-            staging = Path(td) / "Desktop_Staging"
+            staging = Path(td) / "Desktop_Aux"
             root.mkdir(parents=True)
 
             cfg_path = Path(td) / "desktop_rules.yml"
@@ -250,5 +244,5 @@ class TestBuiltinDesktopPlannerConfig(unittest.TestCase):
 
             with self.assertRaises(ValidationError) as ctx:
                 planner.plan(intent)
-            self.assertEqual(ctx.exception.code, "config.invalid")
+            self.assertIn(ctx.exception.code, ("config.schema_invalid", "config.invalid"))
 

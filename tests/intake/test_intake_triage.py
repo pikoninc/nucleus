@@ -54,6 +54,21 @@ class TestIntakeTriage(unittest.TestCase):
         self.assertEqual(res.intent["intent_id"], "desktop.tidy.preview")
         self.assertEqual(res.intent["context"], {"ui": "test"})
 
+    def test_params_json_is_decoded_when_present(self) -> None:
+        scope = {"fs_roots": ["~/Desktop"], "allow_network": False}
+        res = triage_text_to_intent(
+            input_text="デスクトップを実行で整理して",
+            intents_catalog=[{"intent_id": "desktop.tidy.run", "plugin_id": "builtin.desktop"}],
+            scope=scope,
+            provider=StubProvider({"intent_id": "desktop.tidy.run", "params_json": "{\"config_path\": \"~/cfg.yml\"}", "clarify": ["どのフォルダ？"]}),
+            provider_id="stub",
+            model="stub",
+            allow_network=True,
+        )
+        self.assertEqual(res.intent["intent_id"], "desktop.tidy.run")
+        self.assertEqual(res.intent["params"]["config_path"], "~/cfg.yml")
+        self.assertEqual(res.intent["params"]["clarify"], ["どのフォルダ？"])
+
 
 if __name__ == "__main__":
     unittest.main()

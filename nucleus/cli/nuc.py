@@ -16,8 +16,9 @@ from nucleus.bootstrap_tools import build_tool_registry
 from nucleus.contract_store import ContractStore
 from nucleus.core.kernel import Kernel
 from nucleus.core.runtime_context import RuntimeContext
-from nucleus.core.errors import ValidationError
+from nucleus.core.errors import NucleusError, ValidationError
 from nucleus.resources import core_contracts_examples_dir, core_contracts_schemas_dir, plugins_dir
+from nucleus.resources import plugin_contract_schema_path
 from nucleus.registry.plugin_registry import PluginRegistry
 from plugins.builtin_desktop.planner import get_planner as get_builtin_desktop_planner
 from nucleus.trace.replay import Replay
@@ -83,8 +84,7 @@ def _default_desktop_config_path() -> Path:
 
 def _render_desktop_rules_yaml(*, root_path: str, staging_dir: str) -> str:
     # Keep this in sync with the plugin's schema and common expectations.
-    # - screenshots: filename regex
-    # - images: generic image mime prefix
+    # New spec: folders are absolute paths (or ~-prefixed paths).
     return (
         "version: \"0.1\"\n"
         "plugin: \"builtin.desktop\"\n\n"
@@ -92,18 +92,16 @@ def _render_desktop_rules_yaml(*, root_path: str, staging_dir: str) -> str:
         f"  path: \"{root_path}\"\n"
         f"  staging_dir: \"{staging_dir}\"\n\n"
         "folders:\n"
-        "  screenshots: \"Screenshots\"\n"
-        "  images: \"Images\"\n"
-        "  documents: \"Documents\"\n"
-        "  archives: \"Archives\"\n"
-        "  misc: \"Misc\"\n\n"
+        "  documents: \"~/Documents\"\n"
+        "  images: \"~/Pictures\"\n"
+        "  downloads: \"~/Downloads\"\n\n"
         "rules:\n"
         "  - id: \"rule_screenshots\"\n"
         "    match:\n"
         "      any:\n"
         "        - filename_regex: \"^Screen Shot \"\n"
         "    action:\n"
-        "      move_to: \"screenshots\"\n\n"
+        "      move_to: \"images\"\n\n"
         "  - id: \"rule_images\"\n"
         "    match:\n"
         "      any:\n"
@@ -116,12 +114,17 @@ def _render_desktop_rules_yaml(*, root_path: str, staging_dir: str) -> str:
         "        - ext_in: [\"pdf\", \"docx\", \"xlsx\", \"pptx\", \"txt\", \"md\"]\n"
         "    action:\n"
         "      move_to: \"documents\"\n\n"
+        "  - id: \"rule_tmp_delete\"\n"
+        "    match:\n"
+        "      any:\n"
+        "        - ext_in: [\"tmp\", \"crdownload\", \"download\"]\n"
+        "    action:\n"
+        "      delete: true\n\n"
         "defaults:\n"
         "  unmatched_action:\n"
-        "    move_to: \"misc\"\n\n"
+        "    move_to: \"downloads\"\n\n"
         "safety:\n"
         "  no_delete: true\n"
-        "  require_staging: true\n"
         "  collision_strategy: \"suffix_increment\"\n"
         "  ignore_patterns: [\".DS_Store\"]\n"
     )
@@ -234,6 +237,21 @@ def _maybe_load_dotenv() -> None:
     # - `env` (repo-safe sample can be copied/renamed)
     for name in (".env", "env"):
         _load_dotenv_from_file(cwd / name)
+
+
+def _format_cli_error(e: Exception) -> str:
+    """
+    Print-friendly error formatting for CLI commands.
+    - Always includes code/message (via __str__) when it's a NucleusError
+    - Includes structured `data` payload when present (useful for HTTP errors)
+    """
+    if isinstance(e, NucleusError) and isinstance(e.data, dict) and e.data:
+        data = dict(e.data)
+        # Keep error bodies bounded to avoid dumping huge blobs.
+        if isinstance(data.get("body"), str) and len(data["body"]) > 2000:
+            data["body"] = data["body"][:2000] + "...(truncated)"
+        return str(e) + "\n" + json.dumps(data, ensure_ascii=False, indent=2)
+    return str(e)
 
 
 def _scaffold_app_dir(*, project_dir: Path, app_id: str, app_name: str) -> None:
@@ -499,7 +517,7 @@ def cmd_memory_stub(args: argparse.Namespace) -> int:
     return 0
 
 
-def _load_desktop_rules_paths(config_path: str) -> tuple[str, str]:
+def _load_desktop_rules_summary(config_path: str) -> tuple[str, str, Dict[str, str]]:
     """
     Best-effort config reader used by CLI to set scope and preflight scans.
     Schema validation is performed inside the plugin planner.
@@ -517,7 +535,77 @@ def _load_desktop_rules_paths(config_path: str) -> tuple[str, str]:
         raise ValidationError(code="config.invalid", message="Config.root.path must be a non-empty string")
     if not isinstance(staging_dir, str) or not staging_dir:
         raise ValidationError(code="config.invalid", message="Config.root.staging_dir must be a non-empty string")
-    return (root_path, staging_dir)
+    folders = raw.get("folders", {})
+    folders_out: Dict[str, str] = {}
+    if isinstance(folders, dict):
+        for k, v in folders.items():
+            if isinstance(k, str) and k and isinstance(v, str) and v:
+                folders_out[k] = v
+    return (root_path, staging_dir, folders_out)
+
+
+def _compute_desktop_scope_roots(config_path: str) -> List[str]:
+    root_path, staging_dir, folders = _load_desktop_rules_summary(config_path)
+    root_path_e = os.path.expanduser(root_path)
+    staging_dir_e = os.path.expanduser(staging_dir)
+    to_delete = f"{staging_dir_e}/ToDelete"
+    roots: List[str] = [root_path_e, staging_dir_e, to_delete]
+    for _k, v in folders.items():
+        roots.append(os.path.expanduser(v))
+    # de-dupe while preserving order
+    out: List[str] = []
+    seen = set()
+    for r in roots:
+        if r not in seen:
+            out.append(r)
+            seen.add(r)
+    return out
+
+
+def _desktop_config_is_valid(config_path: Path) -> tuple[bool, str]:
+    """
+    Validate a desktop rules YAML against the shipped plugin schema.
+    Returns (ok, error_summary). Intended for UX/bootstrapping.
+    """
+    p = config_path.expanduser()
+    try:
+        raw = yaml.safe_load(p.read_text(encoding="utf-8"))
+    except Exception as e:  # noqa: BLE001
+        return (False, f"read_failed: {e!r}")
+    if not isinstance(raw, dict):
+        return (False, "top_level_not_object")
+    try:
+        schema_path = plugin_contract_schema_path("builtin.desktop", "desktop_rules.schema.json")
+        schema = json.loads(schema_path.read_text(encoding="utf-8"))
+        import jsonschema
+
+        jsonschema.Draft202012Validator(schema).validate(raw)
+    except Exception as e:  # noqa: BLE001
+        return (False, str(e))
+
+    # Semantic checks (schema doesn't ensure move_to references a folders key)
+    folders = raw.get("folders", {})
+    if not isinstance(folders, dict):
+        folders = {}
+    folder_keys = {k for k in folders.keys() if isinstance(k, str) and k}
+    defaults = raw.get("defaults", {})
+    if isinstance(defaults, dict):
+        ua = defaults.get("unmatched_action")
+        if isinstance(ua, dict):
+            mt = ua.get("move_to")
+            if isinstance(mt, str) and mt and mt not in folder_keys:
+                return (False, f"unmatched_action.move_to references unknown folder key: {mt}")
+    rules = raw.get("rules", [])
+    if isinstance(rules, list):
+        for r in rules:
+            if not isinstance(r, dict):
+                continue
+            a = r.get("action")
+            if isinstance(a, dict) and isinstance(a.get("move_to"), str):
+                mt = str(a["move_to"])
+                if mt and mt not in folder_keys:
+                    return (False, f"rule.action.move_to references unknown folder key: {mt}")
+    return (True, "")
 
 
 def cmd_check_contracts(_args: argparse.Namespace) -> int:
@@ -632,8 +720,7 @@ def _build_intent_from_args(args: argparse.Namespace) -> dict:
     if not scope_roots:
         # If config_path is provided, include both root and staging_dir so policy scope checks pass.
         if isinstance(params.get("config_path"), str) and params.get("config_path"):
-            root_path, staging_dir = _load_desktop_rules_paths(str(params["config_path"]))
-            scope_roots = [root_path, staging_dir]
+            scope_roots = _compute_desktop_scope_roots(str(params["config_path"]))
         else:
             scope_roots = [params.get("target_dir") or "~/Desktop"]
 
@@ -651,7 +738,7 @@ def _preflight_scan_entries(*, kernel: Kernel, plugins_intent: dict, run_id: str
     # Prefer config-driven root if config_path is provided.
     config_path = params.get("config_path")
     if isinstance(config_path, str) and config_path:
-        root_path, _staging_dir = _load_desktop_rules_paths(config_path)
+        root_path, _staging_dir, _folders = _load_desktop_rules_summary(config_path)
         target_dir = root_path
     else:
         target_dir = params.get("target_dir", "~/Desktop")
@@ -728,6 +815,8 @@ def _preflight_scan_entries(*, kernel: Kernel, plugins_intent: dict, run_id: str
 
 
 def cmd_desktop_configure(args: argparse.Namespace) -> int:
+    if bool(getattr(args, "ai", False)):
+        return cmd_desktop_configure_ai(args)
     root_path = args.root_path or "~/Desktop"
     staging_dir = args.staging_dir or f"{root_path}_Staging"
     out = _render_desktop_rules_yaml(root_path=str(root_path), staging_dir=str(staging_dir))
@@ -738,8 +827,538 @@ def cmd_desktop_configure(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_desktop_configure_ai(args: argparse.Namespace) -> int:
+    """
+    Interactive AI-assisted config generation.
+
+    Users specify only scan roots:
+    - source-root (Desktop)
+    - dest-root(s) (candidate destinations)
+
+    CLI scans only those roots deterministically, asks an LLM to propose a YAML config,
+    then loops review -> feedback -> regenerate until accepted.
+    """
+    if not bool(getattr(args, "allow_network_intake", False)):
+        print("intake.network_denied: pass --allow-network-intake to enable AI config generation")
+        return 2
+
+    source_root = getattr(args, "source_root", None)
+    dest_roots = list(getattr(args, "dest_root", []) or [])
+    if not isinstance(source_root, str) or not source_root.strip():
+        raise ValidationError(code="desktop.configure.invalid", message="--source-root is required when --ai is set")
+    if not dest_roots:
+        raise ValidationError(code="desktop.configure.invalid", message="At least one --dest-root is required when --ai is set")
+
+    source_root = source_root.strip()
+    dest_roots = [str(x).strip() for x in dest_roots if isinstance(x, str) and str(x).strip()]
+    if not dest_roots:
+        raise ValidationError(code="desktop.configure.invalid", message="At least one --dest-root is required when --ai is set")
+
+    # Derived staging dir (aux area for ToDelete aggregation).
+    staging_dir = getattr(args, "staging_dir", None)
+    if not isinstance(staging_dir, str) or not staging_dir.strip():
+        staging_dir = f"{source_root}_Aux"
+
+    config_out = getattr(args, "config_path", None) or getattr(args, "output", None) or str(_default_desktop_config_path())
+    config_out_path = Path(str(config_out)).expanduser()
+
+    # Deterministic scan (only user-specified roots)
+    tools = build_tool_registry()
+    kernel = Kernel(tools)
+    run_id = getattr(args, "run_id", "run_cli_configure")
+    trace_path = Path(getattr(args, "trace", "trace.jsonl"))
+
+    scope_roots = [os.path.expanduser(source_root), os.path.expanduser(staging_dir)] + [os.path.expanduser(d) for d in dest_roots]
+    scope = {"fs_roots": scope_roots, "allow_network": False}
+
+    def scan_source_entries() -> List[Dict[str, Any]]:
+        ctx = RuntimeContext(run_id=f"{run_id}_scan_source", dry_run=True, strict_dry_run=True, allow_destructive=False, trace_path=trace_path)
+        # list
+        list_plan = {
+            "plan_id": "plan_configure_scan_source_list_001",
+            "intent": {"intent_id": "cli.configure.scan_source", "params": {}, "scope": scope, "context": {"source": "cli"}},
+            "steps": [{"step_id": "list", "title": "List source", "phase": "staging", "tool": {"tool_id": "fs.list", "args": {"path": source_root}, "dry_run_ok": True}}],
+        }
+        out = kernel.run_plan(ctx, list_plan)
+        list_res = next((r for r in out.get("results", []) if r.get("step_id") == "list"), None)
+        names: List[str] = []
+        if isinstance(list_res, dict):
+            o = list_res.get("output", {})
+            if isinstance(o, dict) and isinstance(o.get("entries"), list):
+                names = [e for e in o.get("entries") if isinstance(e, str)]
+
+        if not names:
+            return []
+
+        stat_steps = []
+        for i, name in enumerate(names, start=1):
+            stat_steps.append(
+                {
+                    "step_id": f"stat_{i:04d}",
+                    "title": f"Stat: {name}",
+                    "phase": "staging",
+                    "tool": {"tool_id": "fs.stat", "args": {"path": f"{source_root}/{name}"}, "dry_run_ok": True},
+                }
+            )
+        stat_plan = {
+            "plan_id": "plan_configure_scan_source_stat_001",
+            "intent": {"intent_id": "cli.configure.scan_source_stat", "params": {}, "scope": scope, "context": {"source": "cli"}},
+            "steps": stat_steps,
+        }
+        out2 = kernel.run_plan(ctx, stat_plan)
+        results = out2.get("results", [])
+        snapshot: List[Dict[str, Any]] = []
+        if isinstance(results, list):
+            for i, name in enumerate(names, start=1):
+                step_id = f"stat_{i:04d}"
+                r = next((x for x in results if isinstance(x, dict) and x.get("step_id") == step_id), None)
+                o = r.get("output", {}) if isinstance(r, dict) else {}
+                if isinstance(o, dict):
+                    snapshot.append(
+                        {
+                            "name": name,
+                            "is_file": bool(o.get("is_file", False)),
+                            "is_dir": bool(o.get("is_dir", False)),
+                            "size": int(o.get("size")) if isinstance(o.get("size"), int) else None,
+                            "mtime": int(o.get("mtime")) if isinstance(o.get("mtime"), int) else None,
+                        }
+                    )
+        return snapshot
+
+    def scan_dest_tree(dest_root: str, *, max_depth: int) -> List[Dict[str, Any]]:
+        ctx = RuntimeContext(run_id=f"{run_id}_scan_dest", dry_run=True, strict_dry_run=True, allow_destructive=False, trace_path=trace_path)
+        plan = {
+            "plan_id": "plan_configure_scan_dest_walk_001",
+            "intent": {"intent_id": "cli.configure.scan_dest", "params": {}, "scope": scope, "context": {"source": "cli"}},
+            "steps": [
+                {
+                    "step_id": "walk",
+                    "title": "Walk dest",
+                    "phase": "staging",
+                    "tool": {"tool_id": "fs.walk", "args": {"path": dest_root, "include_dirs": True, "max_depth": int(max_depth)}, "dry_run_ok": True},
+                }
+            ],
+        }
+        out = kernel.run_plan(ctx, plan)
+        walk_res = next((r for r in out.get("results", []) if r.get("step_id") == "walk"), None)
+        if isinstance(walk_res, dict):
+            o = walk_res.get("output", {})
+            if isinstance(o, dict) and isinstance(o.get("entries"), list):
+                entries = []
+                for e in o["entries"]:
+                    if isinstance(e, dict) and isinstance(e.get("path"), str):
+                        entries.append(
+                            {"path": e["path"], "is_file": bool(e.get("is_file", False)), "is_dir": bool(e.get("is_dir", False))}
+                        )
+                return entries
+        return []
+
+    max_depth = int(getattr(args, "max_depth", 2))
+    source_entries = scan_source_entries()
+    dest_trees = {d: scan_dest_tree(d, max_depth=max_depth) for d in dest_roots}
+
+    # Summarize source extensions (keep small).
+    ext_counts: Dict[str, int] = {}
+    for e in source_entries:
+        name = str(e.get("name") or "")
+        lower = name.lower()
+        ext = lower.rsplit(".", 1)[-1] if "." in lower and not lower.endswith(".") else ""
+        ext_counts[ext] = ext_counts.get(ext, 0) + 1
+
+    scan_summary = {
+        "source_root": source_root,
+        "dest_roots": dest_roots,
+        "staging_dir": staging_dir,
+        "source": {
+            "total": len(source_entries),
+            "ext_counts": ext_counts,
+            "sample": source_entries[:30],
+        },
+        "dest": {
+            "max_depth": max_depth,
+            "trees": dest_trees,
+        },
+    }
+
+    # LLM request: return YAML config as a string.
+    response_schema = {
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "config_yaml": {"type": "string"},
+            "rationale": {"type": "string"},
+            "clarify": {"type": "array", "items": {"type": "string"}},
+        },
+        "required": ["config_yaml", "rationale", "clarify"],
+    }
+
+    system_prompt = "\n".join(
+        [
+            "You are Nucleus Desktop Configure AI.",
+            "Your job: propose a desktop tidy YAML config for plugin builtin.desktop.",
+            "Constraints:",
+            "- Output must be a single YAML config string in config_yaml.",
+            "- The user specified scan roots only; you must base your proposal solely on the provided scan_summary.",
+            "- root.path MUST equal scan_summary.source_root exactly.",
+            "- root.staging_dir MUST equal scan_summary.staging_dir exactly.",
+            "- folders values MUST be absolute paths or ~-prefixed paths, and MUST be under one of scan_summary.dest_roots.",
+            "- rules.action:",
+            "  - move_to: <folders_key> (folders key only)",
+            "  - delete: true (means move to staging_dir/ToDelete for later manual deletion)",
+            "- Use defaults.unmatched_action.move_to to route unmatched items.",
+            "- Do not propose any deletes. Use delete:true only (move to ToDelete).",
+            "- Prefer creating subfolders under the given dest_roots when helpful (fs.mkdir will be allowed).",
+        ]
+    )
+
+    def _validate_and_normalize_config_yaml(yaml_text: str) -> str:
+        try:
+            obj = yaml.safe_load(yaml_text)
+        except Exception as e:  # noqa: BLE001
+            raise ValidationError(code="config.invalid_yaml", message="Proposed config_yaml is not valid YAML", data={"error": repr(e)}) from e
+        if not isinstance(obj, dict):
+            raise ValidationError(code="config.invalid", message="Proposed config must be a YAML mapping/object")
+
+        # Enforce required top-level keys deterministically (LLM may omit them).
+        obj["version"] = "0.1"
+        obj["plugin"] = "builtin.desktop"
+        if "rules" not in obj:
+            obj["rules"] = []
+
+        # Enforce root.path and staging_dir deterministically.
+        obj.setdefault("root", {})
+        if not isinstance(obj.get("root"), dict):
+            obj["root"] = {}
+        obj["root"]["path"] = source_root
+        obj["root"]["staging_dir"] = staging_dir
+
+        # Normalize common LLM YAML mistakes for folders:
+        # - folders.key: ["/abs/path"]  -> folders.key: "/abs/path"
+        folders_obj = obj.get("folders", {})
+        if isinstance(folders_obj, dict):
+            for k, v in list(folders_obj.items()):
+                if isinstance(v, list):
+                    # Some models emit a list of one folder path, or even a list of file paths.
+                    # Best-effort: convert into a single directory path using commonpath.
+                    if not v:
+                        raise ValidationError(
+                            code="config.invalid",
+                            message="folders values must be strings (absolute paths). Got an empty list.",
+                            data={"key": k, "value": v},
+                        )
+                    if not all(isinstance(item, str) and item.strip() for item in v):
+                        raise ValidationError(
+                            code="config.invalid",
+                            message="folders values must be strings (absolute paths). Got a list with non-strings.",
+                            data={"key": k, "value": v},
+                        )
+                    if len(v) == 1:
+                        folders_obj[k] = v[0]
+                    else:
+                        expanded_items = [os.path.expanduser(item) for item in v]
+                        try:
+                            cp = os.path.commonpath(expanded_items)
+                        except Exception:  # noqa: BLE001
+                            cp = expanded_items[0]
+                        # If commonpath points to a file (all entries identical), use its dirname.
+                        if cp in expanded_items:
+                            cp = os.path.dirname(cp) or cp
+                        folders_obj[k] = cp
+                # Some models emit an object like {path: "/abs/path", ...}
+                elif isinstance(v, dict):
+                    path_val = v.get("path")
+                    if isinstance(path_val, list) and len(path_val) == 1 and isinstance(path_val[0], str):
+                        path_val = path_val[0]
+                    if not isinstance(path_val, str) or not path_val.strip():
+                        path_val = v.get("value")
+                    if isinstance(path_val, str) and path_val.strip():
+                        folders_obj[k] = path_val
+                    else:
+                        raise ValidationError(
+                            code="config.invalid",
+                            message="folders values must be strings (absolute paths). Got an object without a usable 'path'.",
+                            data={"key": k, "value": v},
+                        )
+                # Some models omit the slash after "~" (e.g. "~Downloads")
+                elif isinstance(v, str) and v.startswith("~") and not v.startswith("~/"):
+                    # Best-effort: interpret "~X" as "~/X"
+                    folders_obj[k] = "~/" + v[1:]
+            obj["folders"] = folders_obj
+
+            # Coerce folders destinations to be under specified dest_roots.
+            # Some models wrongly propose folders under source_root (e.g. Desktop/Archives).
+            dest_roots_exp = [os.path.expanduser(d) for d in dest_roots if isinstance(d, str) and d.strip()]
+            primary_dest = dest_roots_exp[0] if dest_roots_exp else None
+            source_root_exp = os.path.expanduser(source_root)
+
+            def _is_under(root: str, path: str) -> bool:
+                try:
+                    return os.path.commonpath([root, path]) == root
+                except Exception:  # noqa: BLE001
+                    return False
+
+            if isinstance(primary_dest, str) and primary_dest:
+                for k, v in list(folders_obj.items()):
+                    if not isinstance(k, str) or not isinstance(v, str) or not v.strip():
+                        continue
+                    p = os.path.expanduser(v)
+
+                    # If it's not absolute, place it safely under primary_dest.
+                    if not os.path.isabs(p):
+                        safe = re.sub(r"[\\/]+", "_", k).strip("_")[:64] or "folder"
+                        folders_obj[k] = os.path.join(primary_dest, safe)
+                        continue
+
+                    # If already under any dest root, keep as-is.
+                    if any(_is_under(dr, p) for dr in dest_roots_exp):
+                        continue
+
+                    # If it points under source_root, relocate under primary_dest by its top-level name.
+                    if _is_under(source_root_exp, p):
+                        rel = os.path.relpath(p, source_root_exp).replace("\\", "/")
+                        top = rel.split("/", 1)[0] if isinstance(rel, str) and rel and rel != "." else ""
+                        name = top or os.path.basename(p) or k
+                        safe = re.sub(r"[\\/]+", "_", str(name)).strip("_")[:64] or "folder"
+                        folders_obj[k] = os.path.join(primary_dest, safe)
+                        continue
+
+                    # Otherwise, relocate unknown/out-of-scope paths safely under primary_dest by basename.
+                    base = os.path.basename(p) or k
+                    safe = re.sub(r"[\\/]+", "_", str(base)).strip("_")[:64] or "folder"
+                    folders_obj[k] = os.path.join(primary_dest, safe)
+
+        # Normalize common LLM YAML mistakes for defaults/rules:
+        # - rules: {unmatched_action: {move_to: ...}}  -> defaults.unmatched_action, rules: []
+        rules_obj = obj.get("rules")
+        if isinstance(rules_obj, dict) and "unmatched_action" in rules_obj and "defaults" not in obj:
+            obj["defaults"] = {"unmatched_action": rules_obj.get("unmatched_action")}
+            obj["rules"] = []
+
+        # Case-insensitive normalization for move_to keys (folders keys).
+        folders_keys = []
+        folders_map = obj.get("folders", {})
+        if isinstance(folders_map, dict):
+            folders_keys = [k for k in folders_map.keys() if isinstance(k, str)]
+        key_by_lower = {k.lower(): k for k in folders_keys}
+
+        def normalize_move_to_key(v: Any) -> Any:
+            if not isinstance(v, str) or not v:
+                return v
+            if v in folders_keys:
+                return v
+            hit = key_by_lower.get(v.lower())
+            return hit or v
+
+        def ensure_folder_key_for_move_to(raw_move_to: Any) -> Any:
+            """
+            Enforce that move_to points to a folder key.
+            If LLM provides a path-like value (e.g. 'Documents/Unmatched' or '/abs/path'),
+            create a new folders key mapping to an absolute path under dest_roots.
+            """
+            mt = normalize_move_to_key(raw_move_to)
+            if not isinstance(mt, str) or not mt:
+                return mt
+            if mt in folders_keys:
+                return mt
+
+            # If pattern: "<folderKey>/<subpath>" then derive a new key.
+            if "/" in mt and not mt.startswith("/") and not mt.startswith("~/"):
+                base, rest = mt.split("/", 1)
+                base2 = normalize_move_to_key(base)
+                if isinstance(base2, str) and base2 in folders_keys and isinstance(folders_map, dict):
+                    base_path_raw = folders_map.get(base2)
+                    if isinstance(base_path_raw, str) and base_path_raw:
+                        base_path = os.path.expanduser(base_path_raw)
+                        if os.path.isabs(base_path):
+                            dest_path = f"{base_path}/{rest}"
+                            new_key = re.sub(r"[^a-z0-9_]+", "_", f"{base2}_{rest}".lower()).strip("_")[:64] or "unmatched"
+                            # Avoid collisions
+                            suffix = 1
+                            candidate = new_key
+                            while candidate in folders_keys:
+                                suffix += 1
+                                candidate = f"{new_key}_{suffix}"
+                            folders_map[candidate] = dest_path
+                            folders_keys.append(candidate)
+                            key_by_lower[candidate.lower()] = candidate
+                            return candidate
+
+            # Absolute path / ~ path: create a new key if it's within dest_roots.
+            if mt.startswith("/") or mt.startswith("~/"):
+                p = os.path.expanduser(mt)
+                if os.path.isabs(p):
+                    dest_roots_exp = [os.path.expanduser(d) for d in dest_roots]
+                    for dr in dest_roots_exp:
+                        try:
+                            if os.path.commonpath([dr, p]) == dr:
+                                # derive key from relative path
+                                rel = os.path.relpath(p, dr).replace("\\", "/")
+                                new_key = re.sub(r"[^a-z0-9_]+", "_", rel.lower()).strip("_")[:64] or "unmatched"
+                                suffix = 1
+                                candidate = new_key
+                                while candidate in folders_keys:
+                                    suffix += 1
+                                    candidate = f"{new_key}_{suffix}"
+                                if isinstance(folders_map, dict):
+                                    folders_map[candidate] = p
+                                folders_keys.append(candidate)
+                                key_by_lower[candidate.lower()] = candidate
+                                return candidate
+                        except Exception:  # noqa: BLE001
+                            continue
+
+            # Fallback: keep as-is (schema validation will catch), but this is informative for debugging.
+            # If it's just an unknown key, pick a safe existing key (prefer downloads) so config is runnable.
+            if folders_keys:
+                preferred = None
+                for cand in ("downloads", "documents", "images", "pictures"):
+                    hit = key_by_lower.get(cand)
+                    if hit:
+                        preferred = hit
+                        break
+                return preferred or folders_keys[0]
+            return mt
+
+        defaults_obj = obj.get("defaults", {})
+        if isinstance(defaults_obj, dict):
+            ua = defaults_obj.get("unmatched_action")
+            if isinstance(ua, dict):
+                # Some models add stray keys like delete: false under unmatched_action.
+                if "delete" in ua:
+                    ua.pop("delete", None)
+                ua_move = ua.get("move_to")
+                ua["move_to"] = ensure_folder_key_for_move_to(ua_move)
+                defaults_obj["unmatched_action"] = ua
+                obj["defaults"] = defaults_obj
+
+        rules_list = obj.get("rules", [])
+        if isinstance(rules_list, list):
+            # Drop or repair malformed rule items (LLM sometimes outputs partial rules like {"action": {...}}).
+            normalized_rules: List[Dict[str, Any]] = []
+            for idx, r in enumerate(rules_list, start=1):
+                if not isinstance(r, dict):
+                    continue
+                m = r.get("match")
+                a = r.get("action")
+                # Must have both match and action to be meaningful; otherwise drop.
+                if not isinstance(m, dict) or not isinstance(a, dict):
+                    continue
+                # Ensure action has a valid move_to/delete shape.
+                if isinstance(a.get("move_to"), str):
+                    a["move_to"] = ensure_folder_key_for_move_to(a.get("move_to"))
+                r["action"] = a
+
+                rid = r.get("id")
+                if not isinstance(rid, str) or not rid.strip():
+                    r["id"] = f"rule_{idx:03d}"
+
+                # Keep only schema-relevant keys (id/match/action)
+                normalized_rules.append({"id": r["id"], "match": m, "action": r["action"]})
+
+            obj["rules"] = normalized_rules
+
+        # Validate against plugin schema.
+        schema_path = plugin_contract_schema_path("builtin.desktop", "desktop_rules.schema.json")
+        schema = json.loads(schema_path.read_text(encoding="utf-8"))
+        try:
+            import jsonschema
+
+            jsonschema.Draft202012Validator(schema).validate(obj)
+        except Exception as e:  # noqa: BLE001
+            raise ValidationError(code="config.schema_invalid", message="Proposed config does not match schema", data={"error": str(e)}) from e
+
+        # Enforce folder destinations stay under specified dest_roots.
+        dest_roots_exp = [os.path.expanduser(d) for d in dest_roots]
+        folders = obj.get("folders", {})
+        if isinstance(folders, dict):
+            for k, v in folders.items():
+                if not isinstance(k, str) or not isinstance(v, str):
+                    continue
+                p = os.path.expanduser(v)
+                ok = False
+                for dr in dest_roots_exp:
+                    try:
+                        if os.path.commonpath([dr, p]) == dr:
+                            ok = True
+                            break
+                    except Exception:  # noqa: BLE001
+                        continue
+                if not ok:
+                    raise ValidationError(
+                        code="config.invalid",
+                        message="folders destination is outside specified --dest-root",
+                        data={"key": k, "path": v, "dest_roots": dest_roots},
+                    )
+
+        # Return normalized YAML.
+        return yaml.safe_dump(obj, sort_keys=False, allow_unicode=True)
+
+    def _call_provider(*, input_text: str, extra: str = "") -> Dict[str, Any]:
+        from nucleus.intake.provider_loading import load_triage_provider
+
+        api_base = args.api_base
+        if api_base is None:
+            env_base = os.environ.get("OPENAI_API_BASE")
+            if isinstance(env_base, str) and env_base.strip():
+                api_base = env_base.strip()
+
+        loaded = load_triage_provider(provider=args.provider, model=args.model, api_base=api_base, api_key_env=args.api_key_env)
+        full_input = input_text if not extra else input_text + "\n\n" + extra
+        return loaded.provider.triage(input_text=full_input, system_prompt=system_prompt, intent_schema=response_schema)
+
+    base_input = json.dumps(scan_summary, ensure_ascii=False, indent=2)
+
+    max_iters = int(getattr(args, "max_iters", 5))
+    accept_first = bool(getattr(args, "accept", False))
+    prev_yaml: str | None = None
+    for it in range(1, max_iters + 1):
+        extra = ""
+        if prev_yaml is not None:
+            extra = "\n".join(["Previous proposal (YAML):", prev_yaml])
+        raw = _call_provider(input_text=base_input, extra=extra)
+        if not isinstance(raw, dict):
+            raise ValidationError(code="intake.invalid_response", message="Provider did not return an object")
+        config_yaml = raw.get("config_yaml")
+        rationale = raw.get("rationale", "")
+        clarify = raw.get("clarify", [])
+        if not isinstance(config_yaml, str) or not config_yaml.strip():
+            raise ValidationError(code="intake.invalid_response", message="Provider response missing config_yaml")
+
+        normalized_yaml = _validate_and_normalize_config_yaml(config_yaml)
+
+        # Show proposal.
+        print(normalized_yaml)
+        if isinstance(rationale, str) and rationale.strip():
+            print(f"Rationale: {rationale}", file=sys.stderr)
+        if isinstance(clarify, list) and clarify:
+            qs = [q for q in clarify if isinstance(q, str) and q.strip()]
+            if qs:
+                print("Questions:", file=sys.stderr)
+                for q in qs:
+                    print(f"- {q}", file=sys.stderr)
+
+        if accept_first:
+            _write_text(config_out_path, normalized_yaml)
+            print(f"OK: wrote config to {config_out_path}")
+            return 0
+
+        ans = input("Accept this config? (y/N): ").strip().lower()
+        if ans in ("y", "yes"):
+            _write_text(config_out_path, normalized_yaml)
+            print(f"OK: wrote config to {config_out_path}")
+            return 0
+
+        feedback = input("Describe what to improve (free text): ").strip()
+        if not feedback:
+            print("No feedback provided; stopping.", file=sys.stderr)
+            return 2
+        prev_yaml = normalized_yaml + "\n\nUser feedback:\n" + feedback
+
+    raise ValidationError(code="desktop.configure.max_iters", message="Max iterations reached without acceptance", data={"max_iters": max_iters})
+
+
 def _run_desktop_intent_with_scan(*, intent_id: str, config_path: str, run_id: str, trace: str, execute: bool) -> int:
-    root_path, staging_dir = _load_desktop_rules_paths(config_path)
+    scope_roots = _compute_desktop_scope_roots(config_path)
 
     plugins_dir = _default_plugins_dir()
     reg = _load_plugins(plugins_dir)
@@ -749,7 +1368,7 @@ def _run_desktop_intent_with_scan(*, intent_id: str, config_path: str, run_id: s
     intent = {
         "intent_id": intent_id,
         "params": {"config_path": config_path},
-        "scope": {"fs_roots": [root_path, staging_dir], "allow_network": False},
+        "scope": {"fs_roots": scope_roots, "allow_network": False},
         "context": {"source": "cli"},
     }
 
@@ -757,20 +1376,8 @@ def _run_desktop_intent_with_scan(*, intent_id: str, config_path: str, run_id: s
     kernel = Kernel(tools)
 
     scan_trace = Path(trace).with_suffix(".preflight.jsonl")
-    if intent_id in ("desktop.tidy.restore",):
-        intent["params"]["sorted_entries"] = _preflight_walk_entries(
-            kernel=kernel,
-            plugins_intent=intent,
-            root_path=staging_dir,
-            run_id=f"{run_id}_preflight",
-            trace_path=scan_trace,
-            include_dirs=False,
-        )
-    else:
-        # tidy.run / tidy.preview
-        intent["params"]["entries"] = _preflight_scan_entries(
-            kernel=kernel, plugins_intent=intent, run_id=f"{run_id}_preflight", trace_path=scan_trace
-        )
+    # tidy.run / tidy.preview
+    intent["params"]["entries"] = _preflight_scan_entries(kernel=kernel, plugins_intent=intent, run_id=f"{run_id}_preflight", trace_path=scan_trace)
 
     ctx = RuntimeContext(
         run_id=run_id,
@@ -779,19 +1386,23 @@ def _run_desktop_intent_with_scan(*, intent_id: str, config_path: str, run_id: s
         allow_destructive=False,
         trace_path=Path(trace),
     )
-    out = kernel.run_intent(ctx, intent, planner)
+    try:
+        out = kernel.run_intent(ctx, intent, planner)
+    except Exception as e:  # noqa: BLE001
+        print(_format_cli_error(e))
+        return 1
     print(json.dumps(out, ensure_ascii=False, indent=2))
     return 0
 
 
 def cmd_desktop_preview(args: argparse.Namespace) -> int:
     cfg = Path(args.config_path).expanduser() if args.config_path else _default_desktop_config_path()
-    cfg2 = _ensure_desktop_config_via_stdio(config_path=cfg)
-    if cfg2 is None:
+    if not cfg.exists():
+        print(f"config.not_found: {cfg} (run: nuc desktop configure --ai ...)")
         return 2
     return _run_desktop_intent_with_scan(
         intent_id="desktop.tidy.preview",
-        config_path=str(cfg2),
+        config_path=str(cfg),
         run_id=args.run_id,
         trace=args.trace,
         execute=False,
@@ -800,26 +1411,12 @@ def cmd_desktop_preview(args: argparse.Namespace) -> int:
 
 def cmd_desktop_run(args: argparse.Namespace) -> int:
     cfg = Path(args.config_path).expanduser() if args.config_path else _default_desktop_config_path()
-    cfg2 = _ensure_desktop_config_via_stdio(config_path=cfg)
-    if cfg2 is None:
+    if not cfg.exists():
+        print(f"config.not_found: {cfg} (run: nuc desktop configure --ai ...)")
         return 2
     return _run_desktop_intent_with_scan(
         intent_id="desktop.tidy.run",
-        config_path=str(cfg2),
-        run_id=args.run_id,
-        trace=args.trace,
-        execute=True,
-    )
-
-
-def cmd_desktop_restore(args: argparse.Namespace) -> int:
-    cfg = Path(args.config_path).expanduser() if args.config_path else _default_desktop_config_path()
-    cfg2 = _ensure_desktop_config_via_stdio(config_path=cfg)
-    if cfg2 is None:
-        return 2
-    return _run_desktop_intent_with_scan(
-        intent_id="desktop.tidy.restore",
-        config_path=str(cfg2),
+        config_path=str(cfg),
         run_id=args.run_id,
         trace=args.trace,
         execute=True,
@@ -843,8 +1440,6 @@ def cmd_desktop_ai(args: argparse.Namespace) -> int:
     text = args.text
     if text is None:
         try:
-            import sys
-
             text = sys.stdin.read()
         except Exception:  # noqa: BLE001
             text = ""
@@ -853,13 +1448,69 @@ def cmd_desktop_ai(args: argparse.Namespace) -> int:
         return 2
 
     cfg = Path(args.config_path).expanduser() if args.config_path else _default_desktop_config_path()
-    cfg2 = _ensure_desktop_config_via_stdio(config_path=cfg)
-    if cfg2 is None:
-        return 2
+    desired_source_root = getattr(args, "source_root", None)
+    desired_dest_roots = list(getattr(args, "dest_root", []) or [])
+    wants_bootstrap = bool((isinstance(desired_source_root, str) and desired_source_root.strip()) or desired_dest_roots)
+    force_bootstrap = False
+    if cfg.exists():
+        ok, _err = _desktop_config_is_valid(cfg)
+        if not ok:
+            # Existing config is incompatible with the current schema (e.g., old relative folder names like "Screenshots").
+            # Keep it intact and generate a new config next to it.
+            generated = cfg.with_name(cfg.stem + ".generated" + cfg.suffix)
+            print(f"config.schema_invalid: existing config is incompatible; generating new config at {generated}", file=sys.stderr)
+            cfg = generated
+            force_bootstrap = True
+        elif wants_bootstrap:
+            # User provided scan roots; prefer them over an existing config (which may point elsewhere).
+            generated = cfg.with_name(cfg.stem + ".generated" + cfg.suffix)
+            print(f"config.bootstrap: generating config from --source-root/--dest-root at {generated}", file=sys.stderr)
+            cfg = generated
+            force_bootstrap = True
+
+    if force_bootstrap or (not cfg.exists()):
+        # Bootstrap config via configure --ai, then continue.
+        source_root = getattr(args, "source_root", None)
+        dest_roots = list(getattr(args, "dest_root", []) or [])
+        if not isinstance(source_root, str) or not source_root.strip():
+            source_root = input("Source root to scan (e.g. ~/Desktop): ").strip()
+        if not dest_roots:
+            raw = input("Destination roots to scan (comma-separated, e.g. ~/Documents,~/Pictures): ").strip()
+            dest_roots = [s.strip() for s in raw.split(",") if s.strip()]
+        if not dest_roots:
+            print("desktop.ai.invalid: missing --dest-root (or interactive input)", file=sys.stderr)
+            return 2
+
+        class _Shim:
+            pass
+
+        shim = _Shim()
+        # Configure --ai args
+        shim.allow_network_intake = True
+        shim.source_root = str(source_root)
+        shim.dest_root = list(dest_roots)
+        shim.staging_dir = getattr(args, "staging_dir", None)
+        shim.config_path = str(cfg)
+        shim.output = None
+        shim.accept = True  # accept first proposal for bootstrap
+        shim.max_iters = int(getattr(args, "configure_max_iters", 3))
+        shim.max_depth = int(getattr(args, "configure_max_depth", 2))
+        shim.trace = getattr(args, "trace", "trace.jsonl")
+        shim.run_id = getattr(args, "run_id", "run_cli") + "_bootstrap"
+        shim.provider = getattr(args, "configure_provider", None) or args.provider
+        shim.model = getattr(args, "configure_model", None) or args.model
+        shim.api_base = getattr(args, "api_base", None)
+        shim.api_key_env = getattr(args, "api_key_env", "OPENAI_API_KEY")
+
+        rc = cmd_desktop_configure_ai(shim)  # writes cfg
+        if rc != 0:
+            return int(rc)
+        if not cfg.exists():
+            print("config.not_found: bootstrap did not write config", file=sys.stderr)
+            return 2
 
     # Use config to define scope (intake must not invent roots).
-    root_path, staging_dir = _load_desktop_rules_paths(str(cfg2))
-    scope = {"fs_roots": [root_path, staging_dir], "allow_network": False}
+    scope = {"fs_roots": _compute_desktop_scope_roots(str(cfg)), "allow_network": False}
 
     plugins_dir = Path(args.plugins_dir) if args.plugins_dir else _default_plugins_dir()
     reg = _load_plugins(plugins_dir)
@@ -894,22 +1545,22 @@ def cmd_desktop_ai(args: argparse.Namespace) -> int:
             allow_network=True,
         )
     except Exception as e:  # noqa: BLE001
-        print(str(e))
+        print(_format_cli_error(e))
         return 1
 
     intent = res.intent
     iid = intent.get("intent_id")
-    if iid in ("desktop.tidy.preview", "desktop.tidy.run", "desktop.tidy.restore"):
+    if iid in ("desktop.tidy.preview", "desktop.tidy.run"):
         params = intent.get("params", {}) if isinstance(intent.get("params"), dict) else {}
         if not isinstance(params.get("config_path"), str) or not params.get("config_path"):
-            params["config_path"] = str(cfg2)
+            params["config_path"] = str(cfg)
         intent["params"] = params
 
     # Execute based on chosen intent.
     if iid == "desktop.tidy.preview":
         return _run_desktop_intent_with_scan(
             intent_id="desktop.tidy.preview",
-            config_path=str(cfg2),
+            config_path=str(cfg),
             run_id=args.run_id,
             trace=args.trace,
             execute=False,
@@ -917,15 +1568,7 @@ def cmd_desktop_ai(args: argparse.Namespace) -> int:
     if iid == "desktop.tidy.run":
         return _run_desktop_intent_with_scan(
             intent_id="desktop.tidy.run",
-            config_path=str(cfg2),
-            run_id=args.run_id,
-            trace=args.trace,
-            execute=True,
-        )
-    if iid == "desktop.tidy.restore":
-        return _run_desktop_intent_with_scan(
-            intent_id="desktop.tidy.restore",
-            config_path=str(cfg2),
+            config_path=str(cfg),
             run_id=args.run_id,
             trace=args.trace,
             execute=True,
@@ -1129,8 +1772,6 @@ def cmd_intake(args: argparse.Namespace) -> int:
     if text is None:
         # Read from stdin if not provided.
         try:
-            import sys
-
             text = sys.stdin.read()
         except Exception:  # noqa: BLE001
             text = ""
@@ -1175,7 +1816,7 @@ def cmd_intake(args: argparse.Namespace) -> int:
             allow_network=True,
         )
     except Exception as e:  # noqa: BLE001
-        print(str(e))
+        print(_format_cli_error(e))
         return 1
 
     if args.full:
@@ -1222,19 +1863,15 @@ def _alfred_query_to_intent(*, query: str) -> Dict[str, Any]:
         intent_id = "desktop.tidy.configure"
         params: Dict[str, Any] = {}
         scope_roots = ["."]
-    elif subcmd in ("legacy",):
-        target_dir = tokens[2] if len(tokens) >= 3 else "~/Desktop"
-        intent_id = "desktop.tidy"
-        params = {"target_dir": target_dir}
-        scope_roots = [target_dir, f"{target_dir}/_Sorted"]
     elif subcmd in ("preview", "run", "restore"):
         if len(tokens) < 3:
             raise ValidationError(code="alfred.invalid", message=f"Missing config_path for tidy {subcmd}")
         config_path = tokens[2]
+        if subcmd == "restore":
+            raise ValidationError(code="alfred.invalid", message="Unsupported command: tidy restore")
         intent_id = f"desktop.tidy.{subcmd}"
         params = {"config_path": config_path}
-        root_path, staging_dir = _load_desktop_rules_paths(config_path)
-        scope_roots = [root_path, staging_dir]
+        scope_roots = _compute_desktop_scope_roots(config_path)
     else:
         # `tidy <config_path>`
         if len(tokens) < 2:
@@ -1242,8 +1879,7 @@ def _alfred_query_to_intent(*, query: str) -> Dict[str, Any]:
         config_path = tokens[1]
         intent_id = "desktop.tidy.preview"
         params = {"config_path": config_path}
-        root_path, staging_dir = _load_desktop_rules_paths(config_path)
-        scope_roots = [root_path, staging_dir]
+        scope_roots = _compute_desktop_scope_roots(config_path)
 
     return {
         "intent_id": intent_id,
@@ -1261,22 +1897,21 @@ def cmd_alfred(args: argparse.Namespace) -> int:
     query = args.query
     if query is None:
         try:
-            import sys
-
             query = sys.stdin.read()
         except Exception:  # noqa: BLE001
             query = ""
     try:
         intent = _alfred_query_to_intent(query=str(query))
     except Exception as e:  # noqa: BLE001
-        print(str(e))
+        print(_format_cli_error(e))
         return 1
     print(json.dumps(intent, ensure_ascii=False, indent=2))
     return 0
 
 
 def main(argv=None) -> int:
-    _maybe_load_dotenv()
+    if str(os.environ.get("NUCLEUS_DISABLE_DOTENV", "")).strip().lower() not in ("1", "true", "yes"):
+        _maybe_load_dotenv()
     parser = argparse.ArgumentParser(prog="nuc", description="Nucleus CLI (framework)")
     sub = parser.add_subparsers(dest="cmd", required=True)
 
@@ -1405,6 +2040,18 @@ def main(argv=None) -> int:
     p_dc.add_argument("--root-path", default="~/Desktop", help="Root desktop path")
     p_dc.add_argument("--staging-dir", help="Staging dir path (default: <root>_Staging)")
     p_dc.add_argument("--output", help="Write config to file instead of stdout")
+    p_dc.add_argument("--ai", action="store_true", help="Generate config via AI + deterministic scans (interactive)")
+    p_dc.add_argument("--source-root", help="Scan source root (e.g. ~/Desktop) (required with --ai)")
+    p_dc.add_argument("--dest-root", action="append", default=[], help="Destination root (repeatable) (required with --ai)")
+    p_dc.add_argument("--config-path", help="Write generated config to this path (default: XDG config)")
+    p_dc.add_argument("--accept", action="store_true", help="Accept first proposal and write without prompts")
+    p_dc.add_argument("--max-iters", type=int, default=5, help="Max propose/review iterations (default: 5)")
+    p_dc.add_argument("--max-depth", type=int, default=2, help="Max depth for dest-root scan (default: 2)")
+    p_dc.add_argument("--provider", default="openai.responses", help="Provider ID or 'module:object' spec (used with --ai)")
+    p_dc.add_argument("--model", default="gpt-4o-mini", help="Model name (provider-specific) (used with --ai)")
+    p_dc.add_argument("--api-base", help="Provider API base URL (when supported)")
+    p_dc.add_argument("--api-key-env", default="OPENAI_API_KEY", help="API key env var name (when supported)")
+    p_dc.add_argument("--allow-network-intake", action="store_true", help="Enable provider API call for AI config generation")
     p_dc.set_defaults(func=cmd_desktop_configure)
 
     p_dp = desktop_sub.add_parser("preview", help="Dry-run tidy using config_path + deterministic preflight scan")
@@ -1419,15 +2066,15 @@ def main(argv=None) -> int:
     p_dr.add_argument("--run-id", default="run_cli", help="Run ID for trace correlation")
     p_dr.set_defaults(func=cmd_desktop_run)
 
-    p_drs = desktop_sub.add_parser("restore", help="Execute restore using config_path + deterministic preflight walk")
-    p_drs.add_argument("--config-path", help="Path to desktop rules YAML (default: XDG config)")
-    p_drs.add_argument("--trace", default="trace.jsonl", help="Trace output path (jsonl)")
-    p_drs.add_argument("--run-id", default="run_cli", help="Run ID for trace correlation")
-    p_drs.set_defaults(func=cmd_desktop_restore)
-
     p_dai = desktop_sub.add_parser("ai", help="Desktop tidy via intake (natural language -> intent -> deterministic execution)")
     p_dai.add_argument("--text", help="Natural language input. If omitted, read from stdin.")
     p_dai.add_argument("--config-path", help="Desktop rules config path (default: XDG config)")
+    p_dai.add_argument("--source-root", help="(Bootstrap) Scan source root when config is missing")
+    p_dai.add_argument("--dest-root", action="append", default=[], help="(Bootstrap) Destination root (repeatable) when config is missing")
+    p_dai.add_argument("--configure-provider", help="(Bootstrap) Provider for configure --ai (default: --provider)")
+    p_dai.add_argument("--configure-model", help="(Bootstrap) Model for configure --ai (default: --model)")
+    p_dai.add_argument("--configure-max-iters", type=int, default=3, help="(Bootstrap) Max configure iterations (default: 3)")
+    p_dai.add_argument("--configure-max-depth", type=int, default=2, help="(Bootstrap) Max dest scan depth (default: 2)")
     p_dai.add_argument("--plugins-dir", default=str(_default_plugins_dir()), help="Plugins directory (for intent catalog)")
     p_dai.add_argument("--provider", default="openai.responses", help="Provider ID or 'module:object' spec")
     p_dai.add_argument("--model", default="gpt-4o-mini", help="Model name (provider-specific)")
@@ -1439,7 +2086,11 @@ def main(argv=None) -> int:
     p_dai.set_defaults(func=cmd_desktop_ai)
 
     ns = parser.parse_args(argv)
-    return int(ns.func(ns))
+    try:
+        return int(ns.func(ns))
+    except Exception as e:  # noqa: BLE001
+        print(_format_cli_error(e))
+        return 1
 
 
 if __name__ == "__main__":

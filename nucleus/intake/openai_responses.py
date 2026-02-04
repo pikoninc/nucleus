@@ -89,13 +89,14 @@ class OpenAIResponsesClient:
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": input_text},
             ],
-            "response_format": {
-                "type": "json_schema",
-                "json_schema": {
+            # Structured outputs (Responses API): response_format moved under text.format
+            "text": {
+                "format": {
+                    "type": "json_schema",
                     "name": "nucleus_intake_intent",
                     "schema": response_json_schema,
                     "strict": True,
-                },
+                }
             },
         }
 

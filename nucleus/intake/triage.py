@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Protocol, Sequence
 
@@ -26,24 +27,24 @@ class TriageProvider(Protocol):
 
 def _intent_json_schema_for_llm() -> Dict[str, Any]:
     # Self-contained JSON Schema (no $ref) suitable for OpenAI structured outputs.
+    #
+    # NOTE:
+    # OpenAI structured outputs currently requires `additionalProperties: false` for object schemas.
+    # The core Intent contract allows arbitrary params/context, so we carry params as a JSON string.
     return {
         "type": "object",
         "additionalProperties": False,
         "properties": {
             "intent_id": {"type": "string", "minLength": 1},
-            "params": {"type": "object"},
-            "scope": {
-                "type": "object",
-                "additionalProperties": False,
-                "properties": {
-                    "fs_roots": {"type": "array", "minItems": 1, "items": {"type": "string", "minLength": 1}},
-                    "allow_network": {"type": "boolean"},
-                },
-                "required": ["fs_roots"],
-            },
-            "context": {"type": "object"},
+            # JSON-encoded params object (arbitrary keys allowed once decoded).
+            "params_json": {"type": "string"},
+            # Optional clarifying questions (mapped to params.clarify).
+            # NOTE: OpenAI structured outputs currently expects all top-level properties
+            # to be included in `required` (even if semantically optional). Use an empty
+            # array when there are no clarifying questions.
+            "clarify": {"type": "array", "items": {"type": "string"}, "default": []},
         },
-        "required": ["intent_id", "params", "scope"],
+        "required": ["intent_id", "params_json", "clarify"],
     }
 
 
@@ -89,11 +90,16 @@ def triage_text_to_intent(
     system_prompt = "\n".join(
         [
             "You are Nucleus Intake.",
-            "Your job is to triage user input into a single contract-shaped Intent JSON object.",
+            "Your job is to triage user input into a single JSON object.",
             "Hard constraints:",
             "- No tool execution. No side effects. Output JSON only.",
             "- intent_id MUST be one of the allowed intents listed below.",
-            "- scope MUST be preserved exactly as provided (do not add new roots; do not enable allow_network).",
+            "- You must NOT invent or expand filesystem scope; scope is adapter-owned and will be applied by the system.",
+            "",
+            "Output shape (JSON):",
+            '- intent_id: string (required; choose from allowed intents)',
+            '- params_json: string (required; JSON-encoded object of parameters)',
+            '- clarify: string[] (optional; clarifying questions if needed)',
             "",
             "Allowed intents:",
             *[f"- {iid}" for iid in sorted(set(intent_ids))],
@@ -101,7 +107,8 @@ def triage_text_to_intent(
             "Provided scope (must copy exactly):",
             f"{scope}",
             "",
-            "If the user request is ambiguous, choose the safest intent and put clarifying needs into params.clarify (array of strings).",
+            "If the user request is ambiguous, choose the safest intent and put clarifying needs into clarify (array of strings).",
+            "For params_json, if you have no params, use '{}' exactly.",
         ]
     )
 
@@ -130,8 +137,30 @@ def triage_text_to_intent(
         intent["context"] = context
     elif "context" not in intent:
         intent["context"] = {}
-    if "params" not in intent or not isinstance(intent.get("params"), dict):
-        intent["params"] = {}
+
+    params: Dict[str, Any] = {}
+    if isinstance(intent.get("params"), dict):
+        params = dict(intent["params"])
+    elif isinstance(intent.get("params_json"), str):
+        try:
+            parsed = json.loads(str(intent["params_json"]))
+            if isinstance(parsed, dict):
+                params = dict(parsed)
+        except Exception:  # noqa: BLE001
+            params = {}
+
+    clarify = intent.get("clarify")
+    if isinstance(clarify, list):
+        qs = [q for q in clarify if isinstance(q, str) and q.strip()]
+        if qs:
+            params["clarify"] = qs
+
+    intent["params"] = params
+    # Drop helper fields if present.
+    if "params_json" in intent:
+        intent.pop("params_json", None)
+    if "clarify" in intent:
+        intent.pop("clarify", None)
 
     # Validate against core Intent contract.
     store = _core_contracts()
